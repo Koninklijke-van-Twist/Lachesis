@@ -30,7 +30,8 @@ jobs:
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
 
-      # Stap 1: alles op de server opruimen behalve .htaccess, .htpasswd, *.json, auth.php
+      # Deploy web/ naar FTP. --delete ruimt oude bestanden op, maar laat server-only
+      # paden (cache, auth, .htaccess, sqlite) onaangeroerd.
       - name: Deploy web/ to FTP (with delete & excludes)
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
@@ -49,6 +50,9 @@ jobs:
 
           mirror -R --delete \
             --exclude-glob .htaccess \
+            --exclude-glob .htpasswd \
+            --exclude cache/ \
+            --exclude-glob cache \
             --exclude-glob cache/** \
             --exclude-glob data/** \
             --exclude-glob analytics/*.sqlite \
