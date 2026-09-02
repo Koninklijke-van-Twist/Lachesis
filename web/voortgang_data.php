@@ -68,43 +68,6 @@ function voortgang_scalar_float(mixed $value): float
     return (float) $text;
 }
 
-function voortgang_parse_date(mixed $value): string
-{
-    $text = voortgang_scalar_string($value);
-    if ($text === '') {
-        return '';
-    }
-
-    if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $text, $match) !== 1) {
-        return '';
-    }
-
-    $date = $match[1];
-    if ($date < '1900-01-01') {
-        return '';
-    }
-
-    $parts = explode('-', $date);
-    if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
-        return '';
-    }
-
-    return $date;
-}
-
-function voortgang_date_in_range(string $start, string $end, string $today): bool
-{
-    if ($start !== '' && $start > $today) {
-        return false;
-    }
-
-    if ($end !== '' && $end < $today) {
-        return false;
-    }
-
-    return true;
-}
-
 function voortgang_bc_auth(string $company = ''): array
 {
     global $baseUrl;
@@ -225,24 +188,6 @@ function voortgang_progress_percent(array $counts, int $total): float
     }
 
     return round(($done / $total) * 100, 1);
-}
-
-function voortgang_format_invoice_period(string $amountPeriod, string $start, string $end): string
-{
-    $amountPeriod = trim($amountPeriod);
-    if ($amountPeriod !== '') {
-        return $amountPeriod;
-    }
-
-    if ($start === '' && $end === '') {
-        return '';
-    }
-
-    if ($start !== '' && $end !== '') {
-        return $start . ' / ' . $end;
-    }
-
-    return $start !== '' ? $start : $end;
 }
 
 function voortgang_odata_get_json(string $url, array $auth): array
@@ -412,6 +357,8 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
             }
 
             $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
+            $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
+            $rows[$contractNo]['instructions'] = voortgang_scalar_string($row['KVT_Memo_Internal_Use_Only'] ?? '');
             $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
             // BC levert KVT_Total_Revenue negatief; toon/sla op als positief gefactureerd bedrag.
             $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
@@ -420,64 +367,6 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
             return true;
         }
     );
-}
-
-function voortgang_fetch_invoice_periods_into_rows(string $company, array &$rows): array
-{
-    $today = (new DateTimeImmutable('today'))->format('Y-m-d');
-    $best = [];
-
-    $stats = voortgang_paginate_entity(
-        $company,
-        VOORTGANG_PLANNING_ENTITY,
-        [
-            '$select' => VOORTGANG_PLANNING_SELECT,
-            '$filter' => "Contract_No ne ''",
-        ],
-        static function (array $row) use (&$best, $today, $rows): bool {
-            $contractNo = voortgang_scalar_string($row['Contract_No'] ?? '');
-            if ($contractNo === '' || !isset($rows[$contractNo])) {
-                return false;
-            }
-
-            $amountPeriod = voortgang_scalar_string($row['Amount_Period'] ?? '');
-            $start = voortgang_parse_date($row['Invoice_Period_Start_Date'] ?? '');
-            $end = voortgang_parse_date($row['Invoice_Period_End_Date'] ?? '');
-            $label = voortgang_format_invoice_period($amountPeriod, $start, $end);
-            if ($label === '') {
-                return false;
-            }
-
-            $current = voortgang_date_in_range($start, $end, $today);
-            $existing = $best[$contractNo] ?? null;
-            if ($existing === null || ($current && empty($existing['current']))) {
-                $best[$contractNo] = [
-                    'label' => $label,
-                    'current' => $current,
-                    'start' => $start,
-                ];
-                return true;
-            }
-
-            if ($current === !empty($existing['current']) && $start > (string) ($existing['start'] ?? '')) {
-                $best[$contractNo] = [
-                    'label' => $label,
-                    'current' => $current,
-                    'start' => $start,
-                ];
-            }
-
-            return true;
-        }
-    );
-
-    foreach ($best as $contractNo => $info) {
-        if (isset($rows[$contractNo])) {
-            $rows[$contractNo]['invoice_period'] = (string) ($info['label'] ?? '');
-        }
-    }
-
-    return $stats;
 }
 
 function voortgang_finalize_rows(array $rows): array
@@ -534,7 +423,6 @@ function voortgang_refresh_company(string $company): array
         $rows = [];
         $workorderStats = voortgang_fetch_workorders_into_rows($company, $rows);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
-        $planningStats = voortgang_fetch_invoice_periods_into_rows($company, $rows);
         $finalRows = voortgang_finalize_rows($rows);
 
         voortgang_write_json_file($tmpRows, $finalRows);
@@ -551,9 +439,6 @@ function voortgang_refresh_company(string $company): array
             'contract_read' => (int) ($contractStats['read'] ?? 0),
             'contract_matched' => (int) ($contractStats['kept'] ?? 0),
             'contract_pages' => (int) ($contractStats['pages'] ?? 0),
-            'planning_read' => (int) ($planningStats['read'] ?? 0),
-            'planning_matched' => (int) ($planningStats['kept'] ?? 0),
-            'planning_pages' => (int) ($planningStats['pages'] ?? 0),
         ];
         voortgang_write_json_file($files['meta'], $meta);
 

@@ -15,12 +15,10 @@ const VOORTGANG_COMPANIES = [
 ];
 
 const VOORTGANG_WORKORDERS_ENTITY = 'AppWerkorders';
-const VOORTGANG_CONTRACTS_ENTITY = 'AppMaintenanceContracts';
-const VOORTGANG_PLANNING_ENTITY = 'ContractPlanningsregels';
+const VOORTGANG_CONTRACTS_ENTITY = 'Onderhoudscontract';
 
 const VOORTGANG_WORKORDERS_SELECT = 'No,Contract_No,Status';
-const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
-const VOORTGANG_PLANNING_SELECT = 'Contract_No,Amount_Period,Invoice_Period_Start_Date,Invoice_Period_End_Date';
+const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,Invoice_Period,KVT_Memo_Internal_Use_Only,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
 
 /** Kolomvolgorde van status-totalen. */
 const VOORTGANG_STATUSES = [

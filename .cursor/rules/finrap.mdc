@@ -22,9 +22,8 @@ alwaysApply: true
 - Configuratie en `$select`-velden staan in `web/voortgang_config.php`.
 - Leidende BC-entities:
   - `AppWerkorders` — No, Status, Contract_No
-  - `AppMaintenanceContracts` — Contract_No, Description, KVT_Total_Sales_Price, KVT_Total_Revenue, KVT_Total_Cost
-  - `ContractPlanningsregels` — Amount_Period (invoice period) per contract
-- `nightly.php` haalt per bedrijf werkorders (met contractnummer) en bijbehorende onderhoudscontracten op, aggregeert statuscounts en schrijft cache. Memo Intern is niet gepubliceerd op AppMaintenanceContracts; Instructies blijft leeg tot dat veld beschikbaar is.
+  - `Onderhoudscontract` — Contract_No, Description, Invoice_Period, KVT_Memo_Internal_Use_Only, KVT_Total_Sales_Price, KVT_Total_Revenue, KVT_Total_Cost
+- `nightly.php` haalt per bedrijf werkorders (met contractnummer) en bijbehorende onderhoudscontracten (`Onderhoudscontract`) op, aggregeert statuscounts en schrijft cache. Invoice period en Instructies (Memo Intern) komen van de contractcard.
 - `hourly.php` is niet in gebruik; verversen gaat via nightly.
 - Pagineren via `odata_get_json()` uit `odata.php` (zelfde client als de rest). Niet `odata_get_all()` — die laadt alles in geheugen en kan OOM geven.
 - `index.php` leest alleen de nightly-cache; geen live BC-calls op de hoofdpagina.

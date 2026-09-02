@@ -64,7 +64,6 @@ foreach ($companies as $company) {
             'workorder_pages' => (int) ($meta['workorder_pages'] ?? 0),
             'contract_matched' => (int) ($meta['contract_matched'] ?? 0),
             'contract_read' => (int) ($meta['contract_read'] ?? 0),
-            'planning_matched' => (int) ($meta['planning_matched'] ?? 0),
         ];
     } catch (Throwable $error) {
         $ok = false;

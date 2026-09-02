@@ -104,18 +104,42 @@ if (!in_array($savedPageSize, $voortgangPageSizeOptions, true)) {
 }
 
 $requestedCompany = trim((string) ($_GET['company'] ?? ''));
+$showCompanyWelcome = isset($_GET['welcome']) && trim((string) $_GET['welcome']) === '1';
+
+if (isset($_GET['action']) && trim((string) $_GET['action']) === 'save_company') {
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        @session_start();
+    }
+    $prefEmailSave = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    $companyToSave = trim((string) ($_GET['company'] ?? ''));
+    if ($companyToSave !== '' && in_array($companyToSave, $companies, true)) {
+        if ($prefEmailSave !== '') {
+            saveUserPref($prefEmailSave, 'company', $companyToSave);
+        }
+        header('Location: index.php?company=' . rawurlencode($companyToSave) . '&welcome=1');
+        exit;
+    }
+    header('Location: index.php');
+    exit;
+}
+
+$hasCompanyPref = $savedCompany !== '' && in_array($savedCompany, $companies, true);
+$needsCompanyChoice = !$hasCompanyPref && $companies !== [];
+
 if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
     $company = $requestedCompany;
     if ($prefEmail !== '' && $requestedCompany !== $savedCompany) {
         saveUserPref($prefEmail, 'company', $requestedCompany);
     }
-} elseif ($savedCompany !== '' && in_array($savedCompany, $companies, true)) {
+    $needsCompanyChoice = false;
+} elseif ($hasCompanyPref) {
     $company = $savedCompany;
+    $needsCompanyChoice = false;
 } else {
-    $company = (string) ($companies[0] ?? '');
+    $company = '';
 }
 
-$cache = $company !== '' ? voortgang_read_company_cache($company) : null;
+$cache = (!$needsCompanyChoice && $company !== '') ? voortgang_read_company_cache($company) : null;
 $cachedAt = (int) ($cache['_meta']['cached_at'] ?? 0);
 $cacheStale = $cache !== null && $cachedAt > 0 && (time() - $cachedAt) > 129600;
 $rows = is_array($cache['rows'] ?? null) ? $cache['rows'] : [];
@@ -310,6 +334,26 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         .voortgang-modal-close { border: 0; background: transparent; font-size: 1.4rem; line-height: 1; cursor: pointer; color: var(--kvt-muted); padding: 4px 8px; }
         .voortgang-modal-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
         .voortgang-modal-table th, .voortgang-modal-table td { border-bottom: 1px solid var(--kvt-line); padding: 8px 6px; text-align: left; }
+        .voortgang-company-list { display: grid; gap: 10px; margin-top: 8px; }
+        .voortgang-company-option {
+            font: inherit;
+            font-weight: 700;
+            text-align: left;
+            width: 100%;
+            box-sizing: border-box;
+            border: 1px solid var(--kvt-line);
+            border-radius: 10px;
+            padding: 14px 16px;
+            background: #fff;
+            color: var(--kvt-text);
+            cursor: pointer;
+        }
+        .voortgang-company-option:hover {
+            border-color: var(--kvt-main-blue);
+            background: #f0f9ff;
+        }
+        .voortgang-modal-body-text { color: var(--kvt-muted); margin: 0; line-height: 1.5; }
+        .voortgang-modal-backdrop.is-locked { cursor: default; }
         @media (min-width: 720px) {
             .voortgang-form-grid { grid-template-columns: 1fr auto 180px; align-items: end; }
             .voortgang-modal-backdrop { align-items: center; padding: 24px; }
@@ -325,7 +369,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
             <?php if ($cache !== null): ?>
                 <a class="voortgang-excel" href="<?= voortgang_h($excelUrl) ?>"><?= voortgang_h(LOC('voortgang.btn.excel')) ?></a>
             <?php endif; ?>
-            <?php if ($companies !== []): ?>
+            <?php if ($companies !== [] && !$needsCompanyChoice): ?>
                 <form method="get" action="index.php">
                     <label class="voortgang-muted" style="display:grid;gap:6px;font-weight:700;">
                         <?= voortgang_h(LOC('voortgang.label.company')) ?>
@@ -382,9 +426,9 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         <div class="voortgang-alert"><?= voortgang_h($exportError) ?></div>
     <?php endif; ?>
 
-    <?php if ($cache === null): ?>
+    <?php if (!$needsCompanyChoice && $cache === null): ?>
         <div class="voortgang-alert"><?= voortgang_h(LOC('voortgang.empty.cache')) ?></div>
-    <?php elseif ($cacheStale): ?>
+    <?php elseif (!$needsCompanyChoice && $cacheStale): ?>
         <div class="voortgang-alert voortgang-alert-warn"><?= voortgang_h(LOC('voortgang.stale.cache')) ?></div>
     <?php endif; ?>
 
@@ -491,6 +535,42 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     </div>
 </div>
 
+<div
+    id="voortgang-company-pick-backdrop"
+    class="voortgang-modal-backdrop<?= $needsCompanyChoice ? ' is-open is-locked' : '' ?>"
+    aria-hidden="<?= $needsCompanyChoice ? 'false' : 'true' ?>"
+>
+    <div class="voortgang-modal" role="dialog" aria-modal="true" aria-labelledby="voortgang-company-pick-title">
+        <div class="voortgang-modal-header">
+            <h2 id="voortgang-company-pick-title"><?= voortgang_h(LOC('voortgang.company_pick.title')) ?></h2>
+        </div>
+        <p class="voortgang-modal-body-text"><?= voortgang_h(LOC('voortgang.company_pick.body')) ?></p>
+        <div class="voortgang-company-list">
+            <?php foreach ($companies as $companyOption): ?>
+                <button
+                    type="button"
+                    class="voortgang-company-option"
+                    data-company="<?= voortgang_h($companyOption) ?>"
+                ><?= voortgang_h($companyOption) ?></button>
+            <?php endforeach; ?>
+        </div>
+    </div>
+</div>
+
+<div
+    id="voortgang-company-welcome-backdrop"
+    class="voortgang-modal-backdrop<?= $showCompanyWelcome ? ' is-open' : '' ?>"
+    aria-hidden="<?= $showCompanyWelcome ? 'false' : 'true' ?>"
+>
+    <div class="voortgang-modal" role="dialog" aria-modal="true" aria-labelledby="voortgang-company-welcome-title">
+        <div class="voortgang-modal-header">
+            <h2 id="voortgang-company-welcome-title"><?= voortgang_h(LOC('voortgang.company_welcome.title')) ?></h2>
+            <button type="button" class="voortgang-modal-close" id="voortgang-company-welcome-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+        </div>
+        <p class="voortgang-modal-body-text"><?= voortgang_h(LOC('voortgang.company_welcome.body')) ?></p>
+    </div>
+</div>
+
 <?php renderLanguageSwitcherScript(); ?>
 <script>
 (function () {
@@ -505,6 +585,10 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     var modalTitle = document.getElementById('voortgang-modal-title');
     var modalBody = document.getElementById('voortgang-modal-body');
     var modalClose = document.getElementById('voortgang-modal-close');
+    var companyPickBackdrop = document.getElementById('voortgang-company-pick-backdrop');
+    var companyWelcomeBackdrop = document.getElementById('voortgang-company-welcome-backdrop');
+    var companyWelcomeClose = document.getElementById('voortgang-company-welcome-close');
+    var needsCompanyChoice = <?= $needsCompanyChoice ? 'true' : 'false' ?>;
     var pageSize = <?= (int) $savedPageSize ?>;
     var currentPage = 1;
     var sortKey = 'progress';
@@ -794,6 +878,26 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         backdrop.setAttribute('aria-hidden', 'true');
     }
 
+    function closeCompanyWelcome() {
+        if (!companyWelcomeBackdrop) {
+            return;
+        }
+        companyWelcomeBackdrop.classList.remove('is-open');
+        companyWelcomeBackdrop.setAttribute('aria-hidden', 'true');
+        if (window.history && window.history.replaceState) {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('welcome');
+            window.history.replaceState({}, '', url.pathname + (url.search ? url.search : ''));
+        }
+    }
+
+    function selectCompany(companyName) {
+        if (!companyName) {
+            return;
+        }
+        window.location.href = 'index.php?action=save_company&company=' + encodeURIComponent(companyName);
+    }
+
     function workordersFor(contractNo, status) {
         var entry = workorderMap[contractNo] || {};
         var lists = entry.workorders || {};
@@ -921,10 +1025,37 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
             }
         });
     }
+    if (companyPickBackdrop) {
+        companyPickBackdrop.addEventListener('click', function (event) {
+            var option = event.target.closest('.voortgang-company-option');
+            if (!option) {
+                return;
+            }
+            selectCompany(option.getAttribute('data-company') || '');
+        });
+    }
+    if (companyWelcomeClose) {
+        companyWelcomeClose.addEventListener('click', closeCompanyWelcome);
+    }
+    if (companyWelcomeBackdrop) {
+        companyWelcomeBackdrop.addEventListener('click', function (event) {
+            if (event.target === companyWelcomeBackdrop) {
+                closeCompanyWelcome();
+            }
+        });
+    }
     document.addEventListener('keydown', function (event) {
-        if (event.key === 'Escape') {
-            closeModal();
+        if (event.key !== 'Escape') {
+            return;
         }
+        if (needsCompanyChoice) {
+            return;
+        }
+        if (companyWelcomeBackdrop && companyWelcomeBackdrop.classList.contains('is-open')) {
+            closeCompanyWelcome();
+            return;
+        }
+        closeModal();
     });
 
     applyFilters(true);

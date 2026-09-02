@@ -49,7 +49,7 @@ const TRANSLATIONS = [
         'voortgang.col.description' => 'Omschrijving',
         'voortgang.col.invoice_period' => 'Invoice period',
         'voortgang.col.total' => 'Totaal',
-        'voortgang.col.progress' => 'Voortgang',
+        'voortgang.col.progress' => '% Gecont.+Geann.',
         'voortgang.col.original_amount' => 'Origineel bedrag',
         'voortgang.col.invoiced_amount' => 'Gefactureerd bedrag',
         'voortgang.col.total_cost' => 'Totale Kosten',
@@ -66,6 +66,10 @@ const TRANSLATIONS = [
         'voortgang.modal.title' => 'Werkorders',
         'voortgang.modal.close' => 'Sluiten',
         'voortgang.modal.empty' => 'Geen werkorders op deze status.',
+        'voortgang.company_pick.title' => 'Kies een bedrijf',
+        'voortgang.company_pick.body' => 'Selecteer het bedrijf waarvan je de contractvoortgang wilt bekijken.',
+        'voortgang.company_welcome.title' => 'Bedrijf opgeslagen',
+        'voortgang.company_welcome.body' => 'Je keuze is opgeslagen. Wil je later een ander bedrijf bekijken? Rechtsboven op de pagina kun je via de dropdown een ander bedrijf kiezen.',
     ],
 
     'en' => [
@@ -91,7 +95,7 @@ const TRANSLATIONS = [
         'voortgang.col.description' => 'Description',
         'voortgang.col.invoice_period' => 'Invoice period',
         'voortgang.col.total' => 'Total',
-        'voortgang.col.progress' => 'Progress',
+        'voortgang.col.progress' => '% Checked+Canc.',
         'voortgang.col.original_amount' => 'Original amount',
         'voortgang.col.invoiced_amount' => 'Invoiced amount',
         'voortgang.col.total_cost' => 'Total cost',
@@ -108,6 +112,10 @@ const TRANSLATIONS = [
         'voortgang.modal.title' => 'Work orders',
         'voortgang.modal.close' => 'Close',
         'voortgang.modal.empty' => 'No work orders in this status.',
+        'voortgang.company_pick.title' => 'Choose a company',
+        'voortgang.company_pick.body' => 'Select the company whose contract progress you want to view.',
+        'voortgang.company_welcome.title' => 'Company saved',
+        'voortgang.company_welcome.body' => 'Your choice has been saved. Want to switch later? Use the company dropdown at the top right of the page.',
     ],
 
     'de' => [
@@ -133,7 +141,7 @@ const TRANSLATIONS = [
         'voortgang.col.description' => 'Beschreibung',
         'voortgang.col.invoice_period' => 'Invoice period',
         'voortgang.col.total' => 'Gesamt',
-        'voortgang.col.progress' => 'Fortschritt',
+        'voortgang.col.progress' => '% Gepr.+Annul.',
         'voortgang.col.original_amount' => 'Ursprungsbetrag',
         'voortgang.col.invoiced_amount' => 'Fakturierter Betrag',
         'voortgang.col.total_cost' => 'Gesamtkosten',
@@ -150,6 +158,10 @@ const TRANSLATIONS = [
         'voortgang.modal.title' => 'Arbeitsaufträge',
         'voortgang.modal.close' => 'Schließen',
         'voortgang.modal.empty' => 'Keine Arbeitsaufträge in diesem Status.',
+        'voortgang.company_pick.title' => 'Unternehmen wählen',
+        'voortgang.company_pick.body' => 'Wählen Sie das Unternehmen, dessen Vertragsfortschritt Sie ansehen möchten.',
+        'voortgang.company_welcome.title' => 'Unternehmen gespeichert',
+        'voortgang.company_welcome.body' => 'Ihre Auswahl wurde gespeichert. Möchten Sie später wechseln? Oben rechts auf der Seite können Sie über das Dropdown ein anderes Unternehmen wählen.',
     ],
 
     'fr' => [
@@ -175,7 +187,7 @@ const TRANSLATIONS = [
         'voortgang.col.description' => 'Description',
         'voortgang.col.invoice_period' => 'Invoice period',
         'voortgang.col.total' => 'Total',
-        'voortgang.col.progress' => 'Avancement',
+        'voortgang.col.progress' => '% Contr.+Annul.',
         'voortgang.col.original_amount' => 'Montant d’origine',
         'voortgang.col.invoiced_amount' => 'Montant facturé',
         'voortgang.col.total_cost' => 'Coût total',
@@ -192,6 +204,10 @@ const TRANSLATIONS = [
         'voortgang.modal.title' => 'Ordres de travail',
         'voortgang.modal.close' => 'Fermer',
         'voortgang.modal.empty' => 'Aucun ordre de travail pour ce statut.',
+        'voortgang.company_pick.title' => 'Choisir une société',
+        'voortgang.company_pick.body' => 'Sélectionnez la société dont vous souhaitez consulter l’avancement des contrats.',
+        'voortgang.company_welcome.title' => 'Société enregistrée',
+        'voortgang.company_welcome.body' => 'Votre choix a été enregistré. Pour changer plus tard, utilisez le menu déroulant en haut à droite de la page.',
     ],
 ];
 /**
