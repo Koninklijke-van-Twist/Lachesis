@@ -51,6 +51,7 @@ function voortgang_row_search_text(array $row): string
         voortgang_format_money((float) ($row['total_sales'] ?? 0)),
         voortgang_format_money(voortgang_normalized_revenue((float) ($row['total_revenue'] ?? 0))),
         voortgang_format_money((float) ($row['total_cost'] ?? 0)),
+        voortgang_format_money((float) ($row['open_proforma'] ?? 0)),
     ];
 
     return strtolower(implode(' ', array_map('strval', $parts)));
@@ -64,6 +65,16 @@ function voortgang_count_cell(int $count, string $status): string
 
     return '<td class="num"><button type="button" class="voortgang-count" data-status="'
         . voortgang_h($status) . '">' . (int) $count . '</button></td>';
+}
+
+function voortgang_proforma_cell(float $amount): string
+{
+    if ($amount <= 0) {
+        return '<td class="num">-</td>';
+    }
+
+    return '<td class="num"><button type="button" class="voortgang-proforma">'
+        . voortgang_h(voortgang_format_money($amount)) . '</button></td>';
 }
 
 /**
@@ -220,7 +231,7 @@ foreach ($rowsRaw as $row) {
         'total_sales' => (float) ($row['total_sales'] ?? 0),
         'total_revenue' => (float) ($row['total_revenue'] ?? 0),
         'total_cost' => (float) ($row['total_cost'] ?? 0),
-        'open_proforma' => (string) ($row['open_proforma'] ?? ''),
+        'open_proforma' => (float) ($row['open_proforma'] ?? 0),
         'instructions' => (string) ($row['instructions'] ?? ''),
         'items' => is_array($row['workorders'] ?? null) ? $row['workorders'] : [],
     ];
@@ -474,6 +485,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         table.voortgang-table tbody tr.is-refreshing td { background: #f0f9ff; }
         .voortgang-instructions { max-width: 220px; white-space: pre-wrap; overflow-wrap: anywhere; }
         .voortgang-count { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+        .voortgang-proforma { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; font-variant-numeric: tabular-nums; }
         .voortgang-row-hidden { display: none; }
         .voortgang-pager { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
         .voortgang-pager-top { margin: 0 0 14px; }
@@ -652,7 +664,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                             <th class="num" data-sort="total_sales" data-sort-type="number"><?= voortgang_h(LOC('voortgang.col.original_amount')) ?></th>
                             <th class="num" data-sort="total_revenue" data-sort-type="number"><?= voortgang_h(LOC('voortgang.col.invoiced_amount')) ?></th>
                             <th class="num" data-sort="total_cost" data-sort-type="number"><?= voortgang_h(LOC('voortgang.col.total_cost')) ?></th>
-                            <th data-sort="open_proforma" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.open_proforma')) ?></th>
+                            <th class="num" data-sort="open_proforma" data-sort-type="number"><?= voortgang_h(LOC('voortgang.col.open_proforma')) ?></th>
                             <th data-sort="instructions" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.instructions')) ?></th>
                         </tr>
                     </thead>
@@ -690,7 +702,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                                 data-sort-total_sales="<?= voortgang_h((string) ((float) ($rawRow['total_sales'] ?? 0))) ?>"
                                 data-sort-total_revenue="<?= voortgang_h((string) $revenue) ?>"
                                 data-sort-total_cost="<?= voortgang_h((string) ((float) ($rawRow['total_cost'] ?? 0))) ?>"
-                                data-sort-open_proforma="<?= voortgang_h((string) ($rawRow['open_proforma'] ?? '')) ?>"
+                                data-sort-open_proforma="<?= voortgang_h((string) ((float) ($agg['proforma_total'] ?? 0))) ?>"
                                 data-sort-instructions="<?= voortgang_h((string) ($rawRow['instructions'] ?? '')) ?>"
                             >
                                 <td class="voortgang-contract-cell">
@@ -712,7 +724,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                                 <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_sales'] ?? 0))) ?></td>
                                 <td class="num"><?= voortgang_h(voortgang_format_money($revenue)) ?></td>
                                 <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_cost'] ?? 0))) ?></td>
-                                <td><?= voortgang_h((string) ($rawRow['open_proforma'] ?? '')) ?></td>
+                                <?= voortgang_proforma_cell((float) ($agg['proforma_total'] ?? 0)) ?>
                                 <td class="voortgang-instructions"><?= voortgang_h((string) ($rawRow['instructions'] ?? '')) ?></td>
                             </tr>
                         <?php endforeach; ?>
@@ -837,6 +849,9 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         'workorder_no' => LOC('voortgang.col.workorder_no'),
         'status' => LOC('voortgang.col.status'),
         'empty' => LOC('voortgang.modal.empty'),
+        'proforma_title' => LOC('voortgang.modal.proforma_title'),
+        'proforma_empty' => LOC('voortgang.modal.proforma_empty'),
+        'proforma_amount' => LOC('voortgang.col.proforma_amount'),
         'total' => LOC('voortgang.col.total'),
         'filter_all' => LOC('voortgang.filter.all'),
         'filter_completed' => LOC('voortgang.filter.completed'),
@@ -895,6 +910,15 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             + escapeHtml(status) + '">' + n + '</button></td>';
     }
 
+    function proformaCellHtml(amount) {
+        var value = Number(amount);
+        if (!isFinite(value) || value <= 0) {
+            return '<td class="num">-</td>';
+        }
+        return '<td class="num"><button type="button" class="voortgang-proforma">'
+            + escapeHtml(formatMoneyJs(value)) + '</button></td>';
+    }
+
     function rowSearchText(row) {
         return [
             row.contract_no || '',
@@ -903,7 +927,8 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             row.instructions || '',
             formatMoneyJs(row.total_sales || 0),
             formatMoneyJs(normalizedRevenueJs(row.total_revenue || 0)),
-            formatMoneyJs(row.total_cost || 0)
+            formatMoneyJs(row.total_cost || 0),
+            formatMoneyJs(row.open_proforma || 0)
         ].join(' ').toLowerCase();
     }
 
@@ -926,7 +951,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             total_sales: Number(row.total_sales || 0),
             total_revenue: Number(row.total_revenue || 0),
             total_cost: Number(row.total_cost || 0),
-            open_proforma: row.open_proforma || '',
+            open_proforma: Number(row.open_proforma || 0),
             instructions: row.instructions || '',
             items: Array.isArray(row.workorders) ? row.workorders : []
         };
@@ -953,7 +978,13 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                     return;
                 }
             }
-            out.push(item);
+            out.push({
+                no: item.no || '',
+                status: String(item.status || ''),
+                task_code: taskCode,
+                start_date: startDate,
+                proforma_amount: Number(item.proforma_amount || 0)
+            });
         });
         return out;
     }
@@ -964,6 +995,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             counts[status] = 0;
         });
         var total = 0;
+        var proformaTotal = 0;
         items.forEach(function (item) {
             if (!item || !item.no) {
                 return;
@@ -973,13 +1005,17 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             if (Object.prototype.hasOwnProperty.call(counts, status)) {
                 counts[status] += 1;
             }
+            var proformaAmount = Number(item.proforma_amount || 0);
+            if (isFinite(proformaAmount)) {
+                proformaTotal += proformaAmount;
+            }
         });
         var done = 0;
         progressStatuses.forEach(function (status) {
             done += counts[status] || 0;
         });
         var progress = total > 0 ? Math.round((done / total) * 1000) / 10 : 0;
-        return { counts: counts, total: total, progress: progress };
+        return { counts: counts, total: total, progress: progress, proforma_total: proformaTotal };
     }
 
     function renderContractRow(tr, contractNo) {
@@ -991,6 +1027,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         var agg = aggregateItems(filtered);
         var revenue = normalizedRevenueJs(data.total_revenue || 0);
         var empty = agg.total <= 0;
+        data.open_proforma = agg.proforma_total || 0;
         var html = '';
 
         tr.setAttribute('data-contract', contractNo);
@@ -1008,7 +1045,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         tr.setAttribute('data-sort-total_sales', String(Number(data.total_sales || 0)));
         tr.setAttribute('data-sort-total_revenue', String(revenue));
         tr.setAttribute('data-sort-total_cost', String(Number(data.total_cost || 0)));
-        tr.setAttribute('data-sort-open_proforma', data.open_proforma || '');
+        tr.setAttribute('data-sort-open_proforma', String(Number(agg.proforma_total || 0)));
         tr.setAttribute('data-sort-instructions', data.instructions || '');
 
         html += '<td class="voortgang-contract-cell">';
@@ -1025,7 +1062,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_sales || 0)) + '</td>';
         html += '<td class="num">' + escapeHtml(formatMoneyJs(revenue)) + '</td>';
         html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_cost || 0)) + '</td>';
-        html += '<td>' + escapeHtml(data.open_proforma || '') + '</td>';
+        html += proformaCellHtml(agg.proforma_total || 0);
         html += '<td class="voortgang-instructions">' + escapeHtml(data.instructions || '') + '</td>';
         tr.innerHTML = html;
     }
@@ -1466,6 +1503,48 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         return items;
     }
 
+    function proformaItemsFor(contractNo) {
+        var entry = contractData[contractNo] || {};
+        var filtered = filterItems(entry.items || []);
+        var items = [];
+        filtered.forEach(function (item) {
+            var amount = Number(item.proforma_amount || 0);
+            if (!isFinite(amount) || amount <= 0) {
+                return;
+            }
+            items.push({ no: item.no || '', amount: amount });
+        });
+        items.sort(function (a, b) {
+            return String(a.no).localeCompare(String(b.no), undefined, { numeric: true, sensitivity: 'base' });
+        });
+        return items;
+    }
+
+    function openProforma(contractNo) {
+        if (!modalBody || !backdrop) {
+            return;
+        }
+        var items = proformaItemsFor(contractNo);
+        if (modalTitle) {
+            modalTitle.textContent = labels.proforma_title + ' · ' + contractNo;
+        }
+        if (items.length === 0) {
+            modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.proforma_empty) + '</p>';
+        } else {
+            var html = '<table class="voortgang-modal-table"><thead><tr>';
+            html += '<th>' + escapeHtml(labels.workorder_no) + '</th>';
+            html += '<th class="num">' + escapeHtml(labels.proforma_amount) + '</th>';
+            html += '</tr></thead><tbody>';
+            items.forEach(function (item) {
+                html += '<tr><td>' + escapeHtml(item.no) + '</td><td class="num">' + escapeHtml(formatMoneyJs(item.amount)) + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            modalBody.innerHTML = html;
+        }
+        backdrop.classList.add('is-open');
+        backdrop.setAttribute('aria-hidden', 'false');
+    }
+
     function openWorkorders(contractNo, status) {
         if (!modalBody || !backdrop) {
             return;
@@ -1574,6 +1653,17 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                 var refreshRow = refreshButton.closest('tr');
                 if (refreshRow) {
                     refreshContractRow(refreshRow);
+                }
+                return;
+            }
+
+            var proformaButton = event.target.closest('.voortgang-proforma');
+            if (proformaButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                var proformaRow = proformaButton.closest('tr');
+                if (proformaRow) {
+                    openProforma(proformaRow.getAttribute('data-contract') || '');
                 }
                 return;
             }

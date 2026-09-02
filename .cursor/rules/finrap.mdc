@@ -23,6 +23,7 @@ alwaysApply: true
 - Leidende BC-entities:
   - `AppWerkorders` — No, Status, Contract_No, Task_Code, Start_Date
   - `Onderhoudscontract` — Contract_No, Description, Invoice_Period, KVT_Memo_Internal_Use_Only, KVT_Total_Sales_Price, KVT_Total_Revenue, KVT_Total_Cost
+  - `SalesInvoiceSubform` — Document_Type=Factuur, Job_Task_No (= werkorder No), Line_Amount (open proforma)
 - `nightly.php` haalt per bedrijf werkorders (met contractnummer) en bijbehorende onderhoudscontracten (`Onderhoudscontract`) op, aggregeert statuscounts en schrijft cache. Invoice period en Instructies (Memo Intern) komen van de contractcard. Meta bevat `date_min`/`date_max` (Start_Date-bereik).
 - `hourly.php` is niet in gebruik; verversen gaat via nightly.
 - Pagineren via `odata_get_json()` uit `odata.php` (zelfde client als de rest). Niet `odata_get_all()` — die laadt alles in geheugen en kan OOM geven.

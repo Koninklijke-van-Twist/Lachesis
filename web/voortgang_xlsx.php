@@ -95,7 +95,7 @@ function voortgang_xlsx_export_row(array $row): array
     $revenue = (float) ($row['total_revenue'] ?? 0);
     $values[] = round($revenue < 0 ? -$revenue : $revenue, 2);
     $values[] = round((float) ($row['total_cost'] ?? 0), 2);
-    $values[] = (string) ($row['open_proforma'] ?? '');
+    $values[] = round((float) ($row['open_proforma'] ?? 0), 2);
     $values[] = (string) ($row['instructions'] ?? '');
 
     return $values;
