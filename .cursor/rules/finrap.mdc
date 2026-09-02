@@ -1,0 +1,55 @@
+---
+description: Contractvoortgang projectconventies voor architectuur, data, UI en OData
+alwaysApply: true
+---
+
+# Contractvoortgang projectregels
+
+## Scope en architectuur
+- Deze applicatie draait volledig vanuit de map `web/`.
+- Houd links relatief (`index.php`, `odata.php?...`, `nightly.php`, `hourly.php`).
+- De app is mobile-first. Nieuwe UI-wijzigingen moeten eerst op telefoonscherm goed leesbaar zijn.
+
+## Niet wijzigen
+- Bestand `web/logincheck.php` niet aanpassen.
+- Bestand `web/odata.php` niet aanpassen.
+- Bestand `web/auth.php` alleen aanpassen na expliciete gebruikersvraag.
+
+## Data en logica
+- Hoofdflow staat in `web/index.php`.
+- BC OData-helpers staan in `web/bc_data.php`.
+- Werkorder- en contractdata altijd via functies in `web/voortgang_data.php` ophalen of joinen.
+- Configuratie en `$select`-velden staan in `web/voortgang_config.php`.
+- Leidende BC-entities:
+  - `AppWerkorders` — No, Status, Contract_No
+  - `AppMaintenanceContracts` — Contract_No, Description, KVT_Total_Sales_Price, KVT_Total_Revenue, KVT_Total_Cost
+  - `ContractPlanningsregels` — Amount_Period (invoice period) per contract
+- `nightly.php` haalt per bedrijf werkorders (met contractnummer) en bijbehorende onderhoudscontracten op, aggregeert statuscounts en schrijft cache. Memo Intern is niet gepubliceerd op AppMaintenanceContracts; Instructies blijft leeg tot dat veld beschikbaar is.
+- `hourly.php` is niet in gebruik; verversen gaat via nightly.
+- Pagineren via `odata_get_json()` uit `odata.php` (zelfde client als de rest). Niet `odata_get_all()` — die laadt alles in geheugen en kan OOM geven.
+- `index.php` leest alleen de nightly-cache; geen live BC-calls op de hoofdpagina.
+- Voortgang = percentage werkorders met status Gecontroleerd of Geannuleerd.
+- Sortering op de hoofdpagina: voortgang aflopend.
+
+## UI-regels
+- Geen zware frameworks introduceren zonder expliciet verzoek.
+- Gebruik bestaande favicon/manifest-bestanden op elke HTML-pagina.
+- Gebruik op de hoofdpagina altijd `logo-website.png`.
+- Groene Excel-knop exporteert alle gecachete rijen (niet alleen de huidige pagina) als .xlsx met een Excel-tabel.
+
+## Veiligheid en kwaliteit
+- Vang OData-fouten af en toon een korte gebruikersvriendelijke melding.
+- Bij een mislukte nightly-run de bestaande cache van dat bedrijf niet overschrijven.
+
+## Bij toekomstige uitbreidingen
+- Extra velden eerst verifiëren in `BC Webservices.txt` of `BC Metadata.txt`.
+- Alleen benodigde kolommen opvragen via `$select` voor performance.
+
+## Code-structuur (PHP)
+- Sectievolgorde waar van toepassing: Includes/requires → Constants → Functies → Page load
+- Geen lege secties toevoegen.
+- Classes in een eigen bestand (maximaal 1 class per bestand).
+
+## Werkwijze voor de agent
+- Houd wijzigingen klein en gericht; pas geen ongerelateerde code aan.
+- Volg bestaande conventies in omliggende code voordat je nieuwe patronen introduceert.
