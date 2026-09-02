@@ -345,6 +345,11 @@ function voortgang_progress_percent(array $counts, int $total): float
     return round(($done / $total) * 100, 1);
 }
 
+function voortgang_status_column_label(string $status): string
+{
+    return mb_strtolower(trim($status), 'UTF-8');
+}
+
 function voortgang_odata_get_json(string $url, array $auth): array
 {
     $ch = curl_init($url);
