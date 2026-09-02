@@ -70,6 +70,14 @@ const TRANSLATIONS = [
         'voortgang.company_pick.body' => 'Selecteer het bedrijf waarvan je de contractvoortgang wilt bekijken.',
         'voortgang.company_welcome.title' => 'Bedrijf opgeslagen',
         'voortgang.company_welcome.body' => 'Je keuze is opgeslagen. Wil je later een ander bedrijf bekijken? Rechtsboven op de pagina kun je via de dropdown een ander bedrijf kiezen.',
+        'voortgang.refresh.aria' => 'Contract opnieuw laden uit Business Central',
+        'voortgang.refresh.failed' => 'Verversen mislukt.',
+        'voortgang.refresh.removed' => 'Dit contract heeft geen werkorders meer en is uit de lijst gehaald.',
+        'voortgang.label.date_from' => 'Van',
+        'voortgang.label.date_to' => 'Tot',
+        'voortgang.settings.aria' => 'Instellingen',
+        'voortgang.settings.title' => 'Instellingen',
+        'voortgang.settings.hide_pd' => 'PD-taakcode verbergen',
     ],
 
     'en' => [
@@ -116,6 +124,14 @@ const TRANSLATIONS = [
         'voortgang.company_pick.body' => 'Select the company whose contract progress you want to view.',
         'voortgang.company_welcome.title' => 'Company saved',
         'voortgang.company_welcome.body' => 'Your choice has been saved. Want to switch later? Use the company dropdown at the top right of the page.',
+        'voortgang.refresh.aria' => 'Reload contract from Business Central',
+        'voortgang.refresh.failed' => 'Refresh failed.',
+        'voortgang.refresh.removed' => 'This contract no longer has work orders and was removed from the list.',
+        'voortgang.label.date_from' => 'From',
+        'voortgang.label.date_to' => 'To',
+        'voortgang.settings.aria' => 'Settings',
+        'voortgang.settings.title' => 'Settings',
+        'voortgang.settings.hide_pd' => 'Hide PD task code',
     ],
 
     'de' => [
@@ -162,6 +178,14 @@ const TRANSLATIONS = [
         'voortgang.company_pick.body' => 'Wählen Sie das Unternehmen, dessen Vertragsfortschritt Sie ansehen möchten.',
         'voortgang.company_welcome.title' => 'Unternehmen gespeichert',
         'voortgang.company_welcome.body' => 'Ihre Auswahl wurde gespeichert. Möchten Sie später wechseln? Oben rechts auf der Seite können Sie über das Dropdown ein anderes Unternehmen wählen.',
+        'voortgang.refresh.aria' => 'Vertrag erneut aus Business Central laden',
+        'voortgang.refresh.failed' => 'Aktualisierung fehlgeschlagen.',
+        'voortgang.refresh.removed' => 'Dieser Vertrag hat keine Arbeitsaufträge mehr und wurde aus der Liste entfernt.',
+        'voortgang.label.date_from' => 'Von',
+        'voortgang.label.date_to' => 'Bis',
+        'voortgang.settings.aria' => 'Einstellungen',
+        'voortgang.settings.title' => 'Einstellungen',
+        'voortgang.settings.hide_pd' => 'PD-Taskcode ausblenden',
     ],
 
     'fr' => [
@@ -208,6 +232,14 @@ const TRANSLATIONS = [
         'voortgang.company_pick.body' => 'Sélectionnez la société dont vous souhaitez consulter l’avancement des contrats.',
         'voortgang.company_welcome.title' => 'Société enregistrée',
         'voortgang.company_welcome.body' => 'Votre choix a été enregistré. Pour changer plus tard, utilisez le menu déroulant en haut à droite de la page.',
+        'voortgang.refresh.aria' => 'Recharger le contrat depuis Business Central',
+        'voortgang.refresh.failed' => 'Échec du rafraîchissement.',
+        'voortgang.refresh.removed' => 'Ce contrat n’a plus d’ordres de travail et a été retiré de la liste.',
+        'voortgang.label.date_from' => 'Du',
+        'voortgang.label.date_to' => 'Au',
+        'voortgang.settings.aria' => 'Paramètres',
+        'voortgang.settings.title' => 'Paramètres',
+        'voortgang.settings.hide_pd' => 'Masquer le code tâche PD',
     ],
 ];
 /**

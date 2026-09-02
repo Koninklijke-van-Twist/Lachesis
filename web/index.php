@@ -91,6 +91,21 @@ if (isset($_GET['action']) && trim((string) $_GET['action']) === 'save_page_size
     exit;
 }
 
+if (isset($_GET['action']) && trim((string) $_GET['action']) === 'save_settings') {
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        @session_start();
+    }
+    $prefEmailSettings = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    $hidePd = isset($_GET['hide_pd_task_code']) && (string) $_GET['hide_pd_task_code'] === '1';
+    if ($prefEmailSettings !== '') {
+        saveUserPref($prefEmailSettings, 'hide_pd_task_code', $hidePd);
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo json_encode(['ok' => true, 'hide_pd_task_code' => $hidePd], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 $companies = voortgang_cached_companies();
 if ($companies === []) {
     $companies = VOORTGANG_COMPANIES;
@@ -142,7 +157,28 @@ if ($requestedCompany !== '' && in_array($requestedCompany, $companies, true)) {
 $cache = (!$needsCompanyChoice && $company !== '') ? voortgang_read_company_cache($company) : null;
 $cachedAt = (int) ($cache['_meta']['cached_at'] ?? 0);
 $cacheStale = $cache !== null && $cachedAt > 0 && (time() - $cachedAt) > 129600;
-$rows = is_array($cache['rows'] ?? null) ? $cache['rows'] : [];
+$rowsRaw = is_array($cache['rows'] ?? null) ? $cache['rows'] : [];
+$hidePdTaskCode = !empty($userPrefs['hide_pd_task_code']);
+$dateMin = voortgang_parse_odata_date($cache['_meta']['date_min'] ?? '');
+$dateMax = voortgang_parse_odata_date($cache['_meta']['date_max'] ?? '');
+if ($dateMin === '' || $dateMax === '') {
+    $bounds = voortgang_workorder_date_bounds_from_rows($rowsRaw);
+    if ($dateMin === '') {
+        $dateMin = $bounds['min'];
+    }
+    if ($dateMax === '') {
+        $dateMax = $bounds['max'];
+    }
+}
+$dateFrom = voortgang_parse_odata_date($_GET['date_from'] ?? $dateMin);
+$dateTo = voortgang_parse_odata_date($_GET['date_to'] ?? $dateMax);
+if ($dateFrom === '') {
+    $dateFrom = $dateMin;
+}
+if ($dateTo === '') {
+    $dateTo = $dateMax;
+}
+$rows = voortgang_apply_filters_to_rows($rowsRaw, $hidePdTaskCode, $dateFrom, $dateTo);
 $exportError = '';
 
 if (isset($_GET['export']) && trim((string) $_GET['export']) === 'excel') {
@@ -168,8 +204,8 @@ if ($cachedAt > 0) {
     $cachedAtLabel = (new DateTimeImmutable('@' . $cachedAt))->setTimezone(new DateTimeZone(date_default_timezone_get()))->format('d-m-Y H:i');
 }
 
-$workorderMap = [];
-foreach ($rows as $row) {
+$contractData = [];
+foreach ($rowsRaw as $row) {
     if (!is_array($row)) {
         continue;
     }
@@ -177,18 +213,27 @@ foreach ($rows as $row) {
     if ($contractNo === '') {
         continue;
     }
-    $workorderMap[$contractNo] = [
-        'workorders' => is_array($row['workorders'] ?? null) ? $row['workorders'] : [],
-        'other' => is_array($row['other_workorders'] ?? null) ? $row['other_workorders'] : [],
+    $contractData[$contractNo] = [
+        'contract_no' => $contractNo,
+        'description' => (string) ($row['description'] ?? ''),
+        'invoice_period' => (string) ($row['invoice_period'] ?? ''),
+        'total_sales' => (float) ($row['total_sales'] ?? 0),
+        'total_revenue' => (float) ($row['total_revenue'] ?? 0),
+        'total_cost' => (float) ($row['total_cost'] ?? 0),
+        'open_proforma' => (string) ($row['open_proforma'] ?? ''),
+        'instructions' => (string) ($row['instructions'] ?? ''),
+        'items' => is_array($row['workorders'] ?? null) ? $row['workorders'] : [],
     ];
 }
 
-$workorderMapJson = json_encode($workorderMap, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT);
-if ($workorderMapJson === false) {
-    $workorderMapJson = '{}';
+$contractDataJson = json_encode($contractData, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT);
+if ($contractDataJson === false) {
+    $contractDataJson = '{}';
 }
 
-$excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
+$excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
+    . '&date_from=' . rawurlencode($dateFrom)
+    . '&date_to=' . rawurlencode($dateTo);
 
 ?><!DOCTYPE html>
 <html lang="<?= voortgang_h(getHtmlLang()) ?>">
@@ -202,9 +247,70 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     <?php renderLanguageSwitcherStyles(); ?>
     <style>
         .voortgang-page { margin: 0 auto; padding: 16px; }
-        .voortgang-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-        .voortgang-header img { max-height: 42px; width: auto; }
-        .voortgang-header-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-left: auto; }
+        .voortgang-header {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .voortgang-header img { max-height: 42px; width: auto; justify-self: start; }
+        .voortgang-header-dates {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            align-items: end;
+            justify-content: center;
+        }
+        .voortgang-header-dates label {
+            display: grid;
+            gap: 4px;
+            font-weight: 700;
+            color: var(--kvt-muted);
+            font-size: 0.82rem;
+        }
+        .voortgang-header-dates input[type="date"] {
+            font: inherit;
+            border-radius: 10px;
+            border: 1px solid var(--kvt-line);
+            padding: 8px 10px;
+            min-width: 9.5rem;
+            box-sizing: border-box;
+        }
+        .voortgang-header-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-self: end; }
+        .voortgang-settings-btn {
+            font: inherit;
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            border: 1px solid var(--kvt-line);
+            background: #fff;
+            color: var(--kvt-main-blue);
+            cursor: pointer;
+            line-height: 1;
+            font-size: 1.25rem;
+            padding: 0;
+        }
+        .voortgang-settings-btn:hover,
+        .voortgang-settings-btn:focus-visible {
+            border-color: var(--kvt-main-blue);
+            background: #f0f9ff;
+        }
+        .voortgang-settings-option {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            margin: 12px 0 0;
+            font-weight: 600;
+            color: var(--kvt-text);
+            cursor: pointer;
+        }
+        .voortgang-settings-option input {
+            margin-top: 3px;
+            width: 18px;
+            height: 18px;
+            flex: 0 0 auto;
+        }
         .voortgang-excel { font: inherit; font-weight: 700; background: #15803d; color: #fff; border: 1px solid #15803d; border-radius: 10px; padding: 12px 16px; cursor: pointer; text-decoration: none; display: inline-block; }
         .voortgang-excel:hover { background: #166534; border-color: #166534; color: #fff; }
         .voortgang-card { background: var(--kvt-panel-bg); border: 1px solid var(--kvt-line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
@@ -279,7 +385,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         .voortgang-alert { border: 1px solid #fecaca; background: #fef2f2; color: var(--kvt-danger); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
         .voortgang-alert-warn { border-color: #fdba74; background: #fff7ed; color: #9a3412; }
         .voortgang-muted { color: var(--kvt-muted); }
-        .voortgang-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .voortgang-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-left: 34px; }
         table.voortgang-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; min-width: 1280px; }
         table.voortgang-table th, table.voortgang-table td {
             border-bottom: 1px solid var(--kvt-line);
@@ -314,6 +420,53 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         table.voortgang-table td.num, table.voortgang-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
         table.voortgang-table th:first-child, table.voortgang-table td:first-child { position: sticky; left: 0; z-index: 1; min-width: 110px; }
         table.voortgang-table th:first-child { z-index: 3; }
+        .voortgang-contract-cell { position: relative; }
+        .voortgang-row-refresh {
+            position: absolute;
+            left: -30px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 28px;
+            height: 28px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--kvt-main-blue);
+            font-size: 1rem;
+            line-height: 1;
+            cursor: pointer;
+            opacity: 0;
+            pointer-events: none;
+            z-index: 4;
+        }
+        .voortgang-row-refresh:hover,
+        .voortgang-row-refresh:focus-visible {
+            background: #e0f2fe;
+        }
+        .voortgang-row-refresh.is-busy {
+            opacity: 1;
+            pointer-events: none;
+            animation: voortgang-refresh-spin 0.9s linear infinite;
+        }
+        @media (hover: hover) {
+            table.voortgang-table tbody tr:hover .voortgang-row-refresh:not(:disabled) {
+                opacity: 1;
+                pointer-events: auto;
+            }
+        }
+        @media (hover: none) {
+            .voortgang-row-refresh {
+                opacity: 0.75;
+                pointer-events: auto;
+            }
+        }
+        @keyframes voortgang-refresh-spin {
+            from { transform: translateY(-50%) rotate(0deg); }
+            to { transform: translateY(-50%) rotate(360deg); }
+        }
+        table.voortgang-table tbody tr.is-refreshing td { background: #f0f9ff; }
         .voortgang-instructions { max-width: 220px; white-space: pre-wrap; overflow-wrap: anywhere; }
         .voortgang-count { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
         .voortgang-row-hidden { display: none; }
@@ -359,15 +512,45 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
             .voortgang-modal-backdrop { align-items: center; padding: 24px; }
             .voortgang-modal { border-radius: 16px; }
         }
+        @media (max-width: 900px) {
+            .voortgang-header {
+                grid-template-columns: 1fr;
+                justify-items: stretch;
+            }
+            .voortgang-header img { justify-self: start; }
+            .voortgang-header-dates { justify-content: flex-start; }
+            .voortgang-header-actions { justify-self: stretch; justify-content: flex-start; }
+        }
     </style>
 </head>
 <body>
 <div class="voortgang-page">
     <header class="voortgang-header">
         <img src="logo-website.png" alt="KVT">
+        <?php if ($cache !== null): ?>
+            <div class="voortgang-header-dates">
+                <label>
+                    <?= voortgang_h(LOC('voortgang.label.date_from')) ?>
+                    <input type="date" id="voortgang-date-from" value="<?= voortgang_h($dateFrom) ?>"<?= $dateMin !== '' ? ' min="' . voortgang_h($dateMin) . '"' : '' ?><?= $dateMax !== '' ? ' max="' . voortgang_h($dateMax) . '"' : '' ?>>
+                </label>
+                <label>
+                    <?= voortgang_h(LOC('voortgang.label.date_to')) ?>
+                    <input type="date" id="voortgang-date-to" value="<?= voortgang_h($dateTo) ?>"<?= $dateMin !== '' ? ' min="' . voortgang_h($dateMin) . '"' : '' ?><?= $dateMax !== '' ? ' max="' . voortgang_h($dateMax) . '"' : '' ?>>
+                </label>
+            </div>
+        <?php else: ?>
+            <div></div>
+        <?php endif; ?>
         <div class="voortgang-header-actions">
             <?php if ($cache !== null): ?>
-                <a class="voortgang-excel" href="<?= voortgang_h($excelUrl) ?>"><?= voortgang_h(LOC('voortgang.btn.excel')) ?></a>
+                <button
+                    type="button"
+                    class="voortgang-settings-btn"
+                    id="voortgang-settings-open"
+                    aria-label="<?= voortgang_h(LOC('voortgang.settings.aria')) ?>"
+                    title="<?= voortgang_h(LOC('voortgang.settings.aria')) ?>"
+                >⚙</button>
+                <a class="voortgang-excel" id="voortgang-excel-link" href="<?= voortgang_h($excelUrl) ?>"><?= voortgang_h(LOC('voortgang.btn.excel')) ?></a>
             <?php endif; ?>
             <?php if ($companies !== [] && !$needsCompanyChoice): ?>
                 <form method="get" action="index.php">
@@ -432,13 +615,13 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         <div class="voortgang-alert voortgang-alert-warn"><?= voortgang_h(LOC('voortgang.stale.cache')) ?></div>
     <?php endif; ?>
 
-    <?php if ($cache !== null && $rows === []): ?>
+    <?php if ($cache !== null && $rowsRaw === []): ?>
         <section class="voortgang-card">
             <p class="voortgang-muted"><?= voortgang_h(LOC('voortgang.empty.rows')) ?></p>
         </section>
     <?php endif; ?>
 
-    <?php if ($rows !== []): ?>
+    <?php if ($rowsRaw !== []): ?>
         <section class="voortgang-card">
             <div class="voortgang-pager voortgang-pager-top" hidden>
                 <div class="voortgang-pager-status"></div>
@@ -469,45 +652,63 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($rows as $row): ?>
+                        <?php foreach ($rowsRaw as $rawRow): ?>
                             <?php
-                            if (!is_array($row)) {
+                            if (!is_array($rawRow)) {
                                 continue;
                             }
-                            $counts = is_array($row['counts'] ?? null) ? $row['counts'] : [];
-                            $revenue = voortgang_normalized_revenue((float) ($row['total_revenue'] ?? 0));
+                            $filteredItems = voortgang_filter_workorder_items(
+                                is_array($rawRow['workorders'] ?? null) ? $rawRow['workorders'] : [],
+                                $hidePdTaskCode,
+                                $dateFrom,
+                                $dateTo
+                            );
+                            $agg = voortgang_aggregate_workorder_items($filteredItems);
+                            $counts = $agg['counts'];
+                            $revenue = voortgang_normalized_revenue((float) ($rawRow['total_revenue'] ?? 0));
+                            $rowHidden = $agg['total'] <= 0;
                             ?>
                             <tr
-                                data-contract="<?= voortgang_h((string) ($row['contract_no'] ?? '')) ?>"
-                                data-progress="<?= voortgang_h((string) ((float) ($row['progress'] ?? 0))) ?>"
-                                data-search="<?= voortgang_h(voortgang_row_search_text($row)) ?>"
-                                data-sort-contract_no="<?= voortgang_h((string) ($row['contract_no'] ?? '')) ?>"
-                                data-sort-description="<?= voortgang_h((string) ($row['description'] ?? '')) ?>"
-                                data-sort-invoice_period="<?= voortgang_h((string) ($row['invoice_period'] ?? '')) ?>"
+                                class="<?= $rowHidden ? 'voortgang-row-hidden' : '' ?>"
+                                data-contract="<?= voortgang_h((string) ($rawRow['contract_no'] ?? '')) ?>"
+                                data-progress="<?= voortgang_h((string) $agg['progress']) ?>"
+                                data-filter-empty="<?= $rowHidden ? '1' : '0' ?>"
+                                data-search="<?= voortgang_h(voortgang_row_search_text($rawRow)) ?>"
+                                data-sort-contract_no="<?= voortgang_h((string) ($rawRow['contract_no'] ?? '')) ?>"
+                                data-sort-description="<?= voortgang_h((string) ($rawRow['description'] ?? '')) ?>"
+                                data-sort-invoice_period="<?= voortgang_h((string) ($rawRow['invoice_period'] ?? '')) ?>"
                                 <?php foreach (VOORTGANG_STATUSES as $status): ?>
                                     data-sort-status_<?= voortgang_h(strtolower($status)) ?>="<?= (int) ($counts[$status] ?? 0) ?>"
                                 <?php endforeach; ?>
-                                data-sort-total="<?= (int) ($row['total'] ?? 0) ?>"
-                                data-sort-progress="<?= voortgang_h((string) ((float) ($row['progress'] ?? 0))) ?>"
-                                data-sort-total_sales="<?= voortgang_h((string) ((float) ($row['total_sales'] ?? 0))) ?>"
+                                data-sort-total="<?= (int) $agg['total'] ?>"
+                                data-sort-progress="<?= voortgang_h((string) $agg['progress']) ?>"
+                                data-sort-total_sales="<?= voortgang_h((string) ((float) ($rawRow['total_sales'] ?? 0))) ?>"
                                 data-sort-total_revenue="<?= voortgang_h((string) $revenue) ?>"
-                                data-sort-total_cost="<?= voortgang_h((string) ((float) ($row['total_cost'] ?? 0))) ?>"
-                                data-sort-open_proforma="<?= voortgang_h((string) ($row['open_proforma'] ?? '')) ?>"
-                                data-sort-instructions="<?= voortgang_h((string) ($row['instructions'] ?? '')) ?>"
+                                data-sort-total_cost="<?= voortgang_h((string) ((float) ($rawRow['total_cost'] ?? 0))) ?>"
+                                data-sort-open_proforma="<?= voortgang_h((string) ($rawRow['open_proforma'] ?? '')) ?>"
+                                data-sort-instructions="<?= voortgang_h((string) ($rawRow['instructions'] ?? '')) ?>"
                             >
-                                <td><?= voortgang_h((string) ($row['contract_no'] ?? '')) ?></td>
-                                <td><?= voortgang_h((string) ($row['description'] ?? '')) ?></td>
-                                <td><?= voortgang_h((string) ($row['invoice_period'] ?? '')) ?></td>
+                                <td class="voortgang-contract-cell">
+                                    <button
+                                        type="button"
+                                        class="voortgang-row-refresh"
+                                        aria-label="<?= voortgang_h(LOC('voortgang.refresh.aria')) ?>"
+                                        title="<?= voortgang_h(LOC('voortgang.refresh.aria')) ?>"
+                                    >♻️</button>
+                                    <?= voortgang_h((string) ($rawRow['contract_no'] ?? '')) ?>
+                                </td>
+                                <td><?= voortgang_h((string) ($rawRow['description'] ?? '')) ?></td>
+                                <td><?= voortgang_h((string) ($rawRow['invoice_period'] ?? '')) ?></td>
                                 <?php foreach (VOORTGANG_STATUSES as $status): ?>
                                     <?= voortgang_count_cell((int) ($counts[$status] ?? 0), $status) ?>
                                 <?php endforeach; ?>
-                                <?= voortgang_count_cell((int) ($row['total'] ?? 0), 'Totaal') ?>
-                                <td class="num"><?= voortgang_h(voortgang_format_percent((float) ($row['progress'] ?? 0))) ?></td>
-                                <td class="num"><?= voortgang_h(voortgang_format_money((float) ($row['total_sales'] ?? 0))) ?></td>
+                                <?= voortgang_count_cell((int) $agg['total'], 'Totaal') ?>
+                                <td class="num"><?= voortgang_h(voortgang_format_percent((float) $agg['progress'])) ?></td>
+                                <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_sales'] ?? 0))) ?></td>
                                 <td class="num"><?= voortgang_h(voortgang_format_money($revenue)) ?></td>
-                                <td class="num"><?= voortgang_h(voortgang_format_money((float) ($row['total_cost'] ?? 0))) ?></td>
-                                <td><?= voortgang_h((string) ($row['open_proforma'] ?? '')) ?></td>
-                                <td class="voortgang-instructions"><?= voortgang_h((string) ($row['instructions'] ?? '')) ?></td>
+                                <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_cost'] ?? 0))) ?></td>
+                                <td><?= voortgang_h((string) ($rawRow['open_proforma'] ?? '')) ?></td>
+                                <td class="voortgang-instructions"><?= voortgang_h((string) ($rawRow['instructions'] ?? '')) ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -571,6 +772,19 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     </div>
 </div>
 
+<div id="voortgang-settings-backdrop" class="voortgang-modal-backdrop" aria-hidden="true">
+    <div class="voortgang-modal" role="dialog" aria-modal="true" aria-labelledby="voortgang-settings-title">
+        <div class="voortgang-modal-header">
+            <h2 id="voortgang-settings-title"><?= voortgang_h(LOC('voortgang.settings.title')) ?></h2>
+            <button type="button" class="voortgang-modal-close" id="voortgang-settings-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+        </div>
+        <label class="voortgang-settings-option">
+            <input type="checkbox" id="voortgang-setting-hide-pd"<?= $hidePdTaskCode ? ' checked' : '' ?>>
+            <span><?= voortgang_h(LOC('voortgang.settings.hide_pd')) ?></span>
+        </label>
+    </div>
+</div>
+
 <?php renderLanguageSwitcherScript(); ?>
 <script>
 (function () {
@@ -588,6 +802,13 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     var companyPickBackdrop = document.getElementById('voortgang-company-pick-backdrop');
     var companyWelcomeBackdrop = document.getElementById('voortgang-company-welcome-backdrop');
     var companyWelcomeClose = document.getElementById('voortgang-company-welcome-close');
+    var settingsBackdrop = document.getElementById('voortgang-settings-backdrop');
+    var settingsOpen = document.getElementById('voortgang-settings-open');
+    var settingsClose = document.getElementById('voortgang-settings-close');
+    var hidePdCheckbox = document.getElementById('voortgang-setting-hide-pd');
+    var dateFromInput = document.getElementById('voortgang-date-from');
+    var dateToInput = document.getElementById('voortgang-date-to');
+    var excelLink = document.getElementById('voortgang-excel-link');
     var needsCompanyChoice = <?= $needsCompanyChoice ? 'true' : 'false' ?>;
     var pageSize = <?= (int) $savedPageSize ?>;
     var currentPage = 1;
@@ -595,7 +816,15 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     var sortDir = 'desc';
     var progressStates = ['completed', 'all', 'incomplete'];
     var progressState = 'all';
-    var workorderMap = <?= $workorderMapJson ?>;
+    var contractData = <?= $contractDataJson ?>;
+    var hidePdTaskCode = <?= $hidePdTaskCode ? 'true' : 'false' ?>;
+    var dateMinBound = <?= json_encode($dateMin, JSON_UNESCAPED_UNICODE) ?>;
+    var dateMaxBound = <?= json_encode($dateMax, JSON_UNESCAPED_UNICODE) ?>;
+    var dateFrom = <?= json_encode($dateFrom, JSON_UNESCAPED_UNICODE) ?>;
+    var dateTo = <?= json_encode($dateTo, JSON_UNESCAPED_UNICODE) ?>;
+    var progressStatuses = <?= json_encode(array_values(VOORTGANG_PROGRESS_STATUSES), JSON_UNESCAPED_UNICODE) ?>;
+    var pdTaskCode = <?= json_encode(VOORTGANG_HIDDEN_TASK_CODE_PD, JSON_UNESCAPED_UNICODE) ?>;
+    var refreshInFlight = {};
     var labels = <?= json_encode([
         'row_count' => LOC('voortgang.row_count'),
         'page_status' => LOC('voortgang.pager.status'),
@@ -607,7 +836,12 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         'filter_all' => LOC('voortgang.filter.all'),
         'filter_completed' => LOC('voortgang.filter.completed'),
         'filter_incomplete' => LOC('voortgang.filter.incomplete'),
+        'refresh_aria' => LOC('voortgang.refresh.aria'),
+        'refresh_failed' => LOC('voortgang.refresh.failed'),
+        'refresh_removed' => LOC('voortgang.refresh.removed'),
     ], JSON_UNESCAPED_UNICODE) ?>;
+    var companyName = <?= json_encode($company, JSON_UNESCAPED_UNICODE) ?>;
+    var statusList = <?= json_encode(array_values(VOORTGANG_STATUSES), JSON_UNESCAPED_UNICODE) ?>;
 
     function escapeHtml(value) {
         return String(value)
@@ -615,6 +849,315 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;');
+    }
+
+    function formatMoneyJs(value) {
+        var amount = Number(value);
+        if (!isFinite(amount)) {
+            amount = 0;
+        }
+        if (amount < 0) {
+            amount = -amount;
+        }
+        return '€ ' + amount.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function formatPercentJs(value) {
+        var amount = Number(value);
+        if (!isFinite(amount)) {
+            amount = 0;
+        }
+        if (Math.abs(amount - Math.round(amount)) < 0.05) {
+            return Math.round(amount).toLocaleString('nl-NL') + '%';
+        }
+        return amount.toLocaleString('nl-NL', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
+    }
+
+    function normalizedRevenueJs(value) {
+        var amount = Number(value);
+        if (!isFinite(amount)) {
+            amount = 0;
+        }
+        return amount < 0 ? -amount : amount;
+    }
+
+    function countCellHtml(count, status) {
+        var n = parseInt(count, 10) || 0;
+        if (n <= 0) {
+            return '<td class="num">0</td>';
+        }
+        return '<td class="num"><button type="button" class="voortgang-count" data-status="'
+            + escapeHtml(status) + '">' + n + '</button></td>';
+    }
+
+    function rowSearchText(row) {
+        return [
+            row.contract_no || '',
+            row.description || '',
+            row.invoice_period || '',
+            row.instructions || '',
+            formatMoneyJs(row.total_sales || 0),
+            formatMoneyJs(normalizedRevenueJs(row.total_revenue || 0)),
+            formatMoneyJs(row.total_cost || 0)
+        ].join(' ').toLowerCase();
+    }
+
+    function setBusyState(row, button, busy) {
+        if (row) {
+            row.classList.toggle('is-refreshing', !!busy);
+        }
+        if (button) {
+            button.classList.toggle('is-busy', !!busy);
+            button.disabled = !!busy;
+        }
+    }
+
+    function applyRowPayload(tr, row) {
+        var contractNo = row.contract_no || '';
+        contractData[contractNo] = {
+            contract_no: contractNo,
+            description: row.description || '',
+            invoice_period: row.invoice_period || '',
+            total_sales: Number(row.total_sales || 0),
+            total_revenue: Number(row.total_revenue || 0),
+            total_cost: Number(row.total_cost || 0),
+            open_proforma: row.open_proforma || '',
+            instructions: row.instructions || '',
+            items: Array.isArray(row.workorders) ? row.workorders : []
+        };
+        renderContractRow(tr, contractNo);
+    }
+
+    function filterItems(items) {
+        var list = Array.isArray(items) ? items : [];
+        var out = [];
+        list.forEach(function (item) {
+            if (!item) {
+                return;
+            }
+            var taskCode = String(item.task_code || '');
+            if (hidePdTaskCode && taskCode.toUpperCase() === String(pdTaskCode || 'PD').toUpperCase()) {
+                return;
+            }
+            var startDate = String(item.start_date || '');
+            if (startDate) {
+                if (dateFrom && startDate < dateFrom) {
+                    return;
+                }
+                if (dateTo && startDate > dateTo) {
+                    return;
+                }
+            }
+            out.push(item);
+        });
+        return out;
+    }
+
+    function aggregateItems(items) {
+        var counts = {};
+        statusList.forEach(function (status) {
+            counts[status] = 0;
+        });
+        var total = 0;
+        items.forEach(function (item) {
+            if (!item || !item.no) {
+                return;
+            }
+            total += 1;
+            var status = String(item.status || '');
+            if (Object.prototype.hasOwnProperty.call(counts, status)) {
+                counts[status] += 1;
+            }
+        });
+        var done = 0;
+        progressStatuses.forEach(function (status) {
+            done += counts[status] || 0;
+        });
+        var progress = total > 0 ? Math.round((done / total) * 1000) / 10 : 0;
+        return { counts: counts, total: total, progress: progress };
+    }
+
+    function renderContractRow(tr, contractNo) {
+        var data = contractData[contractNo];
+        if (!data || !tr) {
+            return;
+        }
+        var filtered = filterItems(data.items || []);
+        var agg = aggregateItems(filtered);
+        var revenue = normalizedRevenueJs(data.total_revenue || 0);
+        var empty = agg.total <= 0;
+        var html = '';
+
+        tr.setAttribute('data-contract', contractNo);
+        tr.setAttribute('data-progress', String(agg.progress));
+        tr.setAttribute('data-filter-empty', empty ? '1' : '0');
+        tr.setAttribute('data-search', rowSearchText(data));
+        tr.setAttribute('data-sort-contract_no', contractNo);
+        tr.setAttribute('data-sort-description', data.description || '');
+        tr.setAttribute('data-sort-invoice_period', data.invoice_period || '');
+        statusList.forEach(function (status) {
+            tr.setAttribute('data-sort-status_' + String(status).toLowerCase(), String(agg.counts[status] || 0));
+        });
+        tr.setAttribute('data-sort-total', String(agg.total));
+        tr.setAttribute('data-sort-progress', String(agg.progress));
+        tr.setAttribute('data-sort-total_sales', String(Number(data.total_sales || 0)));
+        tr.setAttribute('data-sort-total_revenue', String(revenue));
+        tr.setAttribute('data-sort-total_cost', String(Number(data.total_cost || 0)));
+        tr.setAttribute('data-sort-open_proforma', data.open_proforma || '');
+        tr.setAttribute('data-sort-instructions', data.instructions || '');
+
+        html += '<td class="voortgang-contract-cell">';
+        html += '<button type="button" class="voortgang-row-refresh" aria-label="' + escapeHtml(labels.refresh_aria) + '" title="' + escapeHtml(labels.refresh_aria) + '">♻️</button>';
+        html += escapeHtml(contractNo);
+        html += '</td>';
+        html += '<td>' + escapeHtml(data.description || '') + '</td>';
+        html += '<td>' + escapeHtml(data.invoice_period || '') + '</td>';
+        statusList.forEach(function (status) {
+            html += countCellHtml(agg.counts[status] || 0, status);
+        });
+        html += countCellHtml(agg.total, 'Totaal');
+        html += '<td class="num">' + escapeHtml(formatPercentJs(agg.progress)) + '</td>';
+        html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_sales || 0)) + '</td>';
+        html += '<td class="num">' + escapeHtml(formatMoneyJs(revenue)) + '</td>';
+        html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_cost || 0)) + '</td>';
+        html += '<td>' + escapeHtml(data.open_proforma || '') + '</td>';
+        html += '<td class="voortgang-instructions">' + escapeHtml(data.instructions || '') + '</td>';
+        tr.innerHTML = html;
+    }
+
+    function recomputeAllRowsFromFilters() {
+        getAllRows().forEach(function (tr) {
+            var contractNo = tr.getAttribute('data-contract') || '';
+            if (contractNo) {
+                renderContractRow(tr, contractNo);
+            }
+        });
+        updateExcelLink();
+        applyFilters(true);
+    }
+
+    function updateExcelLink() {
+        if (!excelLink || !companyName) {
+            return;
+        }
+        excelLink.href = 'index.php?export=excel&company=' + encodeURIComponent(companyName)
+            + '&date_from=' + encodeURIComponent(dateFrom || '')
+            + '&date_to=' + encodeURIComponent(dateTo || '');
+    }
+
+    function syncDateInputs() {
+        if (dateFromInput) {
+            dateFromInput.value = dateFrom || '';
+        }
+        if (dateToInput) {
+            dateToInput.value = dateTo || '';
+        }
+    }
+
+    function onDateRangeChange() {
+        var nextFrom = dateFromInput ? (dateFromInput.value || '') : dateFrom;
+        var nextTo = dateToInput ? (dateToInput.value || '') : dateTo;
+        if (nextFrom && nextTo && nextFrom > nextTo) {
+            if (dateFromInput && dateFromInput === document.activeElement) {
+                nextTo = nextFrom;
+            } else {
+                nextFrom = nextTo;
+            }
+        }
+        if (dateMinBound && nextFrom && nextFrom < dateMinBound) {
+            nextFrom = dateMinBound;
+        }
+        if (dateMaxBound && nextTo && nextTo > dateMaxBound) {
+            nextTo = dateMaxBound;
+        }
+        dateFrom = nextFrom;
+        dateTo = nextTo;
+        syncDateInputs();
+        recomputeAllRowsFromFilters();
+    }
+
+    function saveHidePdSetting(enabled) {
+        hidePdTaskCode = !!enabled;
+        var url = 'index.php?action=save_settings&hide_pd_task_code=' + (hidePdTaskCode ? '1' : '0');
+        fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).catch(function () {});
+        recomputeAllRowsFromFilters();
+    }
+
+    function openSettings() {
+        if (!settingsBackdrop) {
+            return;
+        }
+        settingsBackdrop.classList.add('is-open');
+        settingsBackdrop.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeSettings() {
+        if (!settingsBackdrop) {
+            return;
+        }
+        settingsBackdrop.classList.remove('is-open');
+        settingsBackdrop.setAttribute('aria-hidden', 'true');
+    }
+
+    function refreshContractRow(tr) {
+        var contractNo = tr.getAttribute('data-contract') || '';
+        if (!contractNo || !companyName) {
+            return;
+        }
+        if (refreshInFlight[contractNo]) {
+            return;
+        }
+
+        var button = tr.querySelector('.voortgang-row-refresh');
+        refreshInFlight[contractNo] = true;
+        setBusyState(tr, button, true);
+
+        var url = 'refresh_contract.php?company=' + encodeURIComponent(companyName)
+            + '&contract=' + encodeURIComponent(contractNo)
+            + '&_t=' + Date.now();
+
+        fetch(url, {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        }).then(function (response) {
+            return response.text().then(function (text) {
+                var data = null;
+                try {
+                    data = text ? JSON.parse(text) : null;
+                } catch (e) {
+                    data = null;
+                }
+                return { okHttp: response.ok, data: data };
+            });
+        }).then(function (result) {
+            var data = result.data || {};
+            if (!data.ok) {
+                window.alert((data && data.error) ? data.error : labels.refresh_failed);
+                return;
+            }
+            if (data.removed) {
+                delete contractData[contractNo];
+                if (tr.parentNode) {
+                    tr.parentNode.removeChild(tr);
+                }
+                window.alert(labels.refresh_removed);
+                applyFilters(false);
+                return;
+            }
+            if (!data.row) {
+                window.alert(labels.refresh_failed);
+                return;
+            }
+            applyRowPayload(tr, data.row);
+            applyFilters(false);
+        }).catch(function () {
+            window.alert(labels.refresh_failed);
+        }).then(function () {
+            delete refreshInFlight[contractNo];
+            var freshButton = tr.querySelector ? tr.querySelector('.voortgang-row-refresh') : null;
+            setBusyState(tr, freshButton, false);
+        });
     }
 
     function getAllRows() {
@@ -700,6 +1243,9 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     }
 
     function rowMatchesFilters(row) {
+        if ((row.getAttribute('data-filter-empty') || '0') === '1') {
+            return false;
+        }
         var searchValue = (searchFilter && searchFilter.value ? searchFilter.value : '').trim().toLowerCase();
         var searchText = (row.getAttribute('data-search') || '').toLowerCase();
         if (searchValue !== '' && searchText.indexOf(searchValue) === -1) {
@@ -899,23 +1445,16 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     }
 
     function workordersFor(contractNo, status) {
-        var entry = workorderMap[contractNo] || {};
-        var lists = entry.workorders || {};
+        var entry = contractData[contractNo] || {};
+        var filtered = filterItems(entry.items || []);
         var items = [];
-        if (status === 'Totaal') {
-            Object.keys(lists).forEach(function (key) {
-                (lists[key] || []).forEach(function (no) {
-                    items.push({ no: no, status: key });
-                });
-            });
-            (entry.other || []).forEach(function (extra) {
-                items.push({ no: extra.no || '', status: extra.status || '' });
-            });
-        } else {
-            (lists[status] || []).forEach(function (no) {
-                items.push({ no: no, status: status });
-            });
-        }
+        filtered.forEach(function (item) {
+            var itemStatus = String(item.status || '');
+            if (status !== 'Totaal' && itemStatus !== status) {
+                return;
+            }
+            items.push({ no: item.no || '', status: itemStatus });
+        });
         items.sort(function (a, b) {
             return String(a.no).localeCompare(String(b.no), undefined, { numeric: true, sensitivity: 'base' });
         });
@@ -951,6 +1490,32 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
     if (searchFilter) {
         searchFilter.addEventListener('input', function () { applyFilters(true); });
         searchFilter.addEventListener('change', function () { applyFilters(true); });
+    }
+
+    if (dateFromInput) {
+        dateFromInput.addEventListener('change', onDateRangeChange);
+    }
+    if (dateToInput) {
+        dateToInput.addEventListener('change', onDateRangeChange);
+    }
+
+    if (settingsOpen) {
+        settingsOpen.addEventListener('click', openSettings);
+    }
+    if (settingsClose) {
+        settingsClose.addEventListener('click', closeSettings);
+    }
+    if (settingsBackdrop) {
+        settingsBackdrop.addEventListener('click', function (event) {
+            if (event.target === settingsBackdrop) {
+                closeSettings();
+            }
+        });
+    }
+    if (hidePdCheckbox) {
+        hidePdCheckbox.addEventListener('change', function () {
+            saveHidePdSetting(!!hidePdCheckbox.checked);
+        });
     }
 
     if (progressToggle) {
@@ -997,6 +1562,17 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
 
     if (table) {
         table.addEventListener('click', function (event) {
+            var refreshButton = event.target.closest('.voortgang-row-refresh');
+            if (refreshButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                var refreshRow = refreshButton.closest('tr');
+                if (refreshRow) {
+                    refreshContractRow(refreshRow);
+                }
+                return;
+            }
+
             var header = event.target.closest('thead th[data-sort]');
             if (header) {
                 setSortFromHeader(header);
@@ -1051,6 +1627,10 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         if (needsCompanyChoice) {
             return;
         }
+        if (settingsBackdrop && settingsBackdrop.classList.contains('is-open')) {
+            closeSettings();
+            return;
+        }
         if (companyWelcomeBackdrop && companyWelcomeBackdrop.classList.contains('is-open')) {
             closeCompanyWelcome();
             return;
@@ -1058,6 +1638,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company);
         closeModal();
     });
 
+    updateExcelLink();
     applyFilters(true);
 })();
 </script>

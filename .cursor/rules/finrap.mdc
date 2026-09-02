@@ -21,12 +21,14 @@ alwaysApply: true
 - Werkorder- en contractdata altijd via functies in `web/voortgang_data.php` ophalen of joinen.
 - Configuratie en `$select`-velden staan in `web/voortgang_config.php`.
 - Leidende BC-entities:
-  - `AppWerkorders` — No, Status, Contract_No
+  - `AppWerkorders` — No, Status, Contract_No, Task_Code, Start_Date
   - `Onderhoudscontract` — Contract_No, Description, Invoice_Period, KVT_Memo_Internal_Use_Only, KVT_Total_Sales_Price, KVT_Total_Revenue, KVT_Total_Cost
-- `nightly.php` haalt per bedrijf werkorders (met contractnummer) en bijbehorende onderhoudscontracten (`Onderhoudscontract`) op, aggregeert statuscounts en schrijft cache. Invoice period en Instructies (Memo Intern) komen van de contractcard.
+- `nightly.php` haalt per bedrijf werkorders (met contractnummer) en bijbehorende onderhoudscontracten (`Onderhoudscontract`) op, aggregeert statuscounts en schrijft cache. Invoice period en Instructies (Memo Intern) komen van de contractcard. Meta bevat `date_min`/`date_max` (Start_Date-bereik).
 - `hourly.php` is niet in gebruik; verversen gaat via nightly.
 - Pagineren via `odata_get_json()` uit `odata.php` (zelfde client als de rest). Niet `odata_get_all()` — die laadt alles in geheugen en kan OOM geven.
 - `index.php` leest alleen de nightly-cache; geen live BC-calls op de hoofdpagina.
+- Per-contract verversen: zwevende ♻️ op hover → `refresh_contract.php` laadt dat contract + werkorders live uit BC en schrijft de rij bij in cache. Gelijktijdige clients meeliften via een gedeelde file-lock/status (één BC-fetch).
+- Filters (client + Excel): datumbereik op Start_Date; optioneel PD-taakcode verbergen (userpref). Defaults van/tot = cache date_min/date_max.
 - Voortgang = percentage werkorders met status Gecontroleerd of Geannuleerd.
 - Sortering op de hoofdpagina: voortgang aflopend.
 

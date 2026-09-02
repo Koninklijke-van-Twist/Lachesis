@@ -68,6 +68,181 @@ function voortgang_scalar_float(mixed $value): float
     return (float) $text;
 }
 
+function voortgang_parse_odata_date(mixed $value): string
+{
+    $text = voortgang_scalar_string($value);
+    if ($text === '') {
+        return '';
+    }
+
+    if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $text, $match) !== 1) {
+        return '';
+    }
+
+    $date = $match[1];
+    if ($date < '1900-01-01') {
+        return '';
+    }
+
+    $parts = explode('-', $date);
+    if (!checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+        return '';
+    }
+
+    return $date;
+}
+
+function voortgang_empty_counts(): array
+{
+    $counts = [];
+    foreach (VOORTGANG_STATUSES as $status) {
+        $counts[$status] = 0;
+    }
+
+    return $counts;
+}
+
+/**
+ * @param list<array<string, mixed>> $items
+ * @return list<array{no:string,status:string,task_code:string,start_date:string}>
+ */
+function voortgang_filter_workorder_items(array $items, bool $hidePd, string $dateFrom, string $dateTo): array
+{
+    $dateFrom = trim($dateFrom);
+    $dateTo = trim($dateTo);
+    $filtered = [];
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $taskCode = voortgang_scalar_string($item['task_code'] ?? '');
+        if ($hidePd && strcasecmp($taskCode, VOORTGANG_HIDDEN_TASK_CODE_PD) === 0) {
+            continue;
+        }
+
+        $startDate = voortgang_parse_odata_date($item['start_date'] ?? '');
+        if ($startDate !== '') {
+            if ($dateFrom !== '' && $startDate < $dateFrom) {
+                continue;
+            }
+            if ($dateTo !== '' && $startDate > $dateTo) {
+                continue;
+            }
+        }
+
+        $filtered[] = [
+            'no' => voortgang_scalar_string($item['no'] ?? ''),
+            'status' => voortgang_scalar_string($item['status'] ?? ''),
+            'task_code' => $taskCode,
+            'start_date' => $startDate,
+        ];
+    }
+
+    return $filtered;
+}
+
+/**
+ * @param list<array<string, mixed>> $items
+ * @return array{counts:array<string,int>,total:int,progress:float}
+ */
+function voortgang_aggregate_workorder_items(array $items): array
+{
+    $counts = voortgang_empty_counts();
+    $total = 0;
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $no = voortgang_scalar_string($item['no'] ?? '');
+        if ($no === '') {
+            continue;
+        }
+
+        $total++;
+        $status = voortgang_scalar_string($item['status'] ?? '');
+        if (isset($counts[$status])) {
+            $counts[$status]++;
+        }
+    }
+
+    return [
+        'counts' => $counts,
+        'total' => $total,
+        'progress' => voortgang_progress_percent($counts, $total),
+    ];
+}
+
+/**
+ * @param list<array<string, mixed>> $rows
+ * @return array{min:string,max:string}
+ */
+function voortgang_workorder_date_bounds_from_rows(array $rows): array
+{
+    $min = '';
+    $max = '';
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $date = voortgang_parse_odata_date($item['start_date'] ?? '');
+            if ($date === '') {
+                continue;
+            }
+            if ($min === '' || $date < $min) {
+                $min = $date;
+            }
+            if ($max === '' || $date > $max) {
+                $max = $date;
+            }
+        }
+    }
+
+    return ['min' => $min, 'max' => $max];
+}
+
+function voortgang_apply_filters_to_rows(array $rows, bool $hidePd, string $dateFrom, string $dateTo): array
+{
+    $list = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+        $filtered = voortgang_filter_workorder_items($items, $hidePd, $dateFrom, $dateTo);
+        $agg = voortgang_aggregate_workorder_items($filtered);
+        if ($agg['total'] <= 0) {
+            continue;
+        }
+
+        $row['workorders'] = $filtered;
+        $row['counts'] = $agg['counts'];
+        $row['total'] = $agg['total'];
+        $row['progress'] = $agg['progress'];
+        $list[] = $row;
+    }
+
+    usort($list, static function (array $a, array $b): int {
+        $progress = ((float) ($b['progress'] ?? 0)) <=> ((float) ($a['progress'] ?? 0));
+        if ($progress !== 0) {
+            return $progress;
+        }
+
+        return strnatcasecmp((string) ($a['contract_no'] ?? ''), (string) ($b['contract_no'] ?? ''));
+    });
+
+    return $list;
+}
+
 function voortgang_bc_auth(string $company = ''): array
 {
     global $baseUrl;
@@ -154,26 +329,6 @@ function voortgang_write_json_file(string $path, mixed $payload): void
     $tmp = $path . '.tmp';
     file_put_contents($tmp, $json, LOCK_EX);
     voortgang_replace_cache_file($tmp, $path);
-}
-
-function voortgang_empty_counts(): array
-{
-    $counts = [];
-    foreach (VOORTGANG_STATUSES as $status) {
-        $counts[$status] = 0;
-    }
-
-    return $counts;
-}
-
-function voortgang_empty_workorders(): array
-{
-    $lists = [];
-    foreach (VOORTGANG_STATUSES as $status) {
-        $lists[$status] = [];
-    }
-
-    return $lists;
 }
 
 function voortgang_progress_percent(array $counts, int $total): float
@@ -295,8 +450,7 @@ function voortgang_ensure_row(array &$rows, string $contractNo): void
         'description' => '',
         'invoice_period' => '',
         'counts' => voortgang_empty_counts(),
-        'workorders' => voortgang_empty_workorders(),
-        'other_workorders' => [],
+        'workorders' => [],
         'total' => 0,
         'progress' => 0.0,
         'total_sales' => 0.0,
@@ -305,6 +459,24 @@ function voortgang_ensure_row(array &$rows, string $contractNo): void
         'open_proforma' => '',
         'instructions' => '',
     ];
+}
+
+function voortgang_append_workorder_item(array &$rows, string $contractNo, array $bcRow): bool
+{
+    $no = voortgang_scalar_string($bcRow['No'] ?? '');
+    if ($contractNo === '' || $no === '') {
+        return false;
+    }
+
+    voortgang_ensure_row($rows, $contractNo);
+    $rows[$contractNo]['workorders'][] = [
+        'no' => $no,
+        'status' => voortgang_scalar_string($bcRow['Status'] ?? ''),
+        'task_code' => voortgang_scalar_string($bcRow['Task_Code'] ?? ''),
+        'start_date' => voortgang_parse_odata_date($bcRow['Start_Date'] ?? ''),
+    ];
+
+    return true;
 }
 
 function voortgang_fetch_workorders_into_rows(string $company, array &$rows): array
@@ -318,26 +490,8 @@ function voortgang_fetch_workorders_into_rows(string $company, array &$rows): ar
         ],
         static function (array $row) use (&$rows): bool {
             $contractNo = voortgang_scalar_string($row['Contract_No'] ?? '');
-            $no = voortgang_scalar_string($row['No'] ?? '');
-            if ($contractNo === '' || $no === '') {
-                return false;
-            }
 
-            voortgang_ensure_row($rows, $contractNo);
-            $status = voortgang_scalar_string($row['Status'] ?? '');
-            $rows[$contractNo]['total']++;
-
-            if (isset($rows[$contractNo]['counts'][$status])) {
-                $rows[$contractNo]['counts'][$status]++;
-                $rows[$contractNo]['workorders'][$status][] = $no;
-            } else {
-                $rows[$contractNo]['other_workorders'][] = [
-                    'no' => $no,
-                    'status' => $status,
-                ];
-            }
-
-            return true;
+            return voortgang_append_workorder_item($rows, $contractNo, $row);
         }
     );
 }
@@ -377,41 +531,25 @@ function voortgang_finalize_rows(array $rows): array
             continue;
         }
 
-        $total = (int) ($row['total'] ?? 0);
-        if ($total <= 0) {
+        $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+        usort($items, static function (array $a, array $b): int {
+            return strnatcasecmp((string) ($a['no'] ?? ''), (string) ($b['no'] ?? ''));
+        });
+        $items = array_values($items);
+
+        $agg = voortgang_aggregate_workorder_items($items);
+        if ($agg['total'] <= 0) {
             continue;
         }
 
-        $counts = is_array($row['counts'] ?? null) ? $row['counts'] : voortgang_empty_counts();
-        $workorders = is_array($row['workorders'] ?? null) ? $row['workorders'] : voortgang_empty_workorders();
-        foreach (VOORTGANG_STATUSES as $status) {
-            if (!isset($counts[$status])) {
-                $counts[$status] = 0;
-            }
-            if (!isset($workorders[$status]) || !is_array($workorders[$status])) {
-                $workorders[$status] = [];
-            }
-            natcasesort($workorders[$status]);
-            $workorders[$status] = array_values($workorders[$status]);
-        }
-
-        $row['counts'] = $counts;
-        $row['workorders'] = $workorders;
-        $row['other_workorders'] = is_array($row['other_workorders'] ?? null) ? array_values($row['other_workorders']) : [];
-        $row['progress'] = voortgang_progress_percent($counts, $total);
+        $row['workorders'] = $items;
+        $row['counts'] = $agg['counts'];
+        $row['total'] = $agg['total'];
+        $row['progress'] = $agg['progress'];
         $list[] = $row;
     }
 
-    usort($list, static function (array $a, array $b): int {
-        $progress = ((float) ($b['progress'] ?? 0)) <=> ((float) ($a['progress'] ?? 0));
-        if ($progress !== 0) {
-            return $progress;
-        }
-
-        return strnatcasecmp((string) ($a['contract_no'] ?? ''), (string) ($b['contract_no'] ?? ''));
-    });
-
-    return $list;
+    return voortgang_sort_cached_rows($list);
 }
 
 function voortgang_refresh_company(string $company): array
@@ -424,6 +562,7 @@ function voortgang_refresh_company(string $company): array
         $workorderStats = voortgang_fetch_workorders_into_rows($company, $rows);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
         $finalRows = voortgang_finalize_rows($rows);
+        $dateBounds = voortgang_workorder_date_bounds_from_rows($finalRows);
 
         voortgang_write_json_file($tmpRows, $finalRows);
         voortgang_replace_cache_file($tmpRows, $files['rows']);
@@ -439,6 +578,8 @@ function voortgang_refresh_company(string $company): array
             'contract_read' => (int) ($contractStats['read'] ?? 0),
             'contract_matched' => (int) ($contractStats['kept'] ?? 0),
             'contract_pages' => (int) ($contractStats['pages'] ?? 0),
+            'date_min' => $dateBounds['min'],
+            'date_max' => $dateBounds['max'],
         ];
         voortgang_write_json_file($files['meta'], $meta);
 
@@ -536,40 +677,322 @@ function voortgang_cached_companies(): array
 
 function voortgang_status_workorders(array $row, string $status): array
 {
-    if ($status === 'Totaal') {
-        $all = [];
-        $lists = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
-        foreach (VOORTGANG_STATUSES as $known) {
-            foreach (($lists[$known] ?? []) as $no) {
-                $all[] = ['no' => (string) $no, 'status' => $known];
-            }
-        }
-        foreach (($row['other_workorders'] ?? []) as $extra) {
-            if (!is_array($extra)) {
-                continue;
-            }
-            $all[] = [
-                'no' => voortgang_scalar_string($extra['no'] ?? ''),
-                'status' => voortgang_scalar_string($extra['status'] ?? ''),
-            ];
-        }
-
-        usort($all, static function (array $a, array $b): int {
-            return strnatcasecmp((string) ($a['no'] ?? ''), (string) ($b['no'] ?? ''));
-        });
-
-        return $all;
-    }
-
-    $nos = $row['workorders'][$status] ?? [];
-    if (!is_array($nos)) {
-        return [];
-    }
-
+    $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
     $list = [];
-    foreach ($nos as $no) {
-        $list[] = ['no' => (string) $no, 'status' => $status];
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $no = voortgang_scalar_string($item['no'] ?? '');
+        $itemStatus = voortgang_scalar_string($item['status'] ?? '');
+        if ($no === '') {
+            continue;
+        }
+        if ($status !== 'Totaal' && $itemStatus !== $status) {
+            continue;
+        }
+        $list[] = [
+            'no' => $no,
+            'status' => $itemStatus,
+        ];
     }
+
+    usort($list, static function (array $a, array $b): int {
+        return strnatcasecmp((string) ($a['no'] ?? ''), (string) ($b['no'] ?? ''));
+    });
 
     return $list;
+}
+
+function voortgang_contract_token(string $contractNo): string
+{
+    $token = preg_replace('/[^a-zA-Z0-9_-]+/', '_', trim($contractNo)) ?? '';
+    $token = trim($token, '_');
+
+    return $token !== '' ? $token : 'contract';
+}
+
+function voortgang_refresh_job_paths(string $company, string $contractNo): array
+{
+    $base = voortgang_cache_base_dir() . DIRECTORY_SEPARATOR
+        . voortgang_company_slug($company) . '.refresh.' . voortgang_contract_token($contractNo);
+
+    return [
+        'lock' => $base . '.lock',
+        'status' => $base . '.json',
+    ];
+}
+
+function voortgang_rows_write_lock_path(string $company): string
+{
+    return voortgang_cache_base_dir() . DIRECTORY_SEPARATOR
+        . voortgang_company_slug($company) . '.rows.write.lock';
+}
+
+function voortgang_read_refresh_status(string $statusPath): ?array
+{
+    if (!is_file($statusPath)) {
+        return null;
+    }
+
+    $raw = @file_get_contents($statusPath);
+    if ($raw === false || $raw === '') {
+        return null;
+    }
+
+    $status = json_decode($raw, true);
+
+    return is_array($status) ? $status : null;
+}
+
+function voortgang_write_refresh_status(string $statusPath, array $status): void
+{
+    $json = json_encode($status, JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        throw new RuntimeException('Refresh-status JSON encoderen mislukt');
+    }
+
+    file_put_contents($statusPath, $json, LOCK_EX);
+}
+
+function voortgang_sort_cached_rows(array $rows): array
+{
+    usort($rows, static function (array $a, array $b): int {
+        $progress = ((float) ($b['progress'] ?? 0)) <=> ((float) ($a['progress'] ?? 0));
+        if ($progress !== 0) {
+            return $progress;
+        }
+
+        return strnatcasecmp((string) ($a['contract_no'] ?? ''), (string) ($b['contract_no'] ?? ''));
+    });
+
+    return $rows;
+}
+
+/**
+ * Haalt één contract + werkorders live uit BC en bouwt een cache-rij.
+ * Null = geen werkorders meer (rij moet uit cache).
+ */
+function voortgang_build_contract_row_from_bc(string $company, string $contractNo): ?array
+{
+    $contractNo = trim($contractNo);
+    if ($contractNo === '') {
+        throw new InvalidArgumentException('Contractnummer ontbreekt.');
+    }
+
+    $escaped = bc_escape_odata_string($contractNo);
+    $rows = [];
+
+    voortgang_paginate_entity(
+        $company,
+        VOORTGANG_WORKORDERS_ENTITY,
+        [
+            '$select' => VOORTGANG_WORKORDERS_SELECT,
+            '$filter' => "Contract_No eq '" . $escaped . "'",
+        ],
+        static function (array $row) use (&$rows, $contractNo): bool {
+            $rowContract = voortgang_scalar_string($row['Contract_No'] ?? '');
+            if ($rowContract !== $contractNo) {
+                return false;
+            }
+
+            return voortgang_append_workorder_item($rows, $contractNo, $row);
+        }
+    );
+
+    if (!isset($rows[$contractNo]) || !is_array($rows[$contractNo]['workorders'] ?? null) || $rows[$contractNo]['workorders'] === []) {
+        return null;
+    }
+
+    voortgang_paginate_entity(
+        $company,
+        VOORTGANG_CONTRACTS_ENTITY,
+        [
+            '$select' => VOORTGANG_CONTRACTS_SELECT,
+            '$filter' => "Contract_No eq '" . $escaped . "'",
+        ],
+        static function (array $row) use (&$rows, $contractNo): bool {
+            if (voortgang_scalar_string($row['Contract_No'] ?? '') !== $contractNo || !isset($rows[$contractNo])) {
+                return false;
+            }
+
+            $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
+            $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
+            $rows[$contractNo]['instructions'] = voortgang_scalar_string($row['KVT_Memo_Internal_Use_Only'] ?? '');
+            $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
+            $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
+            $rows[$contractNo]['total_cost'] = voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0);
+
+            return true;
+        }
+    );
+
+    $final = voortgang_finalize_rows($rows);
+
+    return $final[0] ?? null;
+}
+
+/**
+ * Vervangt of verwijdert één contractrij in de company-cache (met write-lock).
+ */
+function voortgang_upsert_contract_row_in_cache(string $company, string $contractNo, ?array $row): void
+{
+    $lockPath = voortgang_rows_write_lock_path($company);
+    $lock = fopen($lockPath, 'c+');
+    if ($lock === false) {
+        throw new RuntimeException('Cache write-lock kon niet worden geopend.');
+    }
+
+    try {
+        if (!flock($lock, LOCK_EX)) {
+            throw new RuntimeException('Cache write-lock kon niet worden verkregen.');
+        }
+
+        $files = voortgang_company_cache_files($company);
+        $list = voortgang_read_company_rows($company);
+        $next = [];
+        $replaced = false;
+
+        foreach ($list as $existing) {
+            if (!is_array($existing)) {
+                continue;
+            }
+            if ((string) ($existing['contract_no'] ?? '') === $contractNo) {
+                $replaced = true;
+                if ($row !== null) {
+                    $next[] = $row;
+                }
+                continue;
+            }
+            $next[] = $existing;
+        }
+
+        if (!$replaced && $row !== null) {
+            $next[] = $row;
+        }
+
+        $next = voortgang_sort_cached_rows($next);
+        voortgang_write_json_file($files['rows'], $next);
+
+        $meta = voortgang_read_company_meta($company);
+        if (!is_array($meta)) {
+            $meta = [
+                'version' => VOORTGANG_CACHE_VERSION,
+                'company' => $company,
+                'cached_at' => time(),
+            ];
+        }
+        $bounds = voortgang_workorder_date_bounds_from_rows($next);
+        $meta['date_min'] = $bounds['min'];
+        $meta['date_max'] = $bounds['max'];
+        $meta['contract_count'] = count($next);
+        voortgang_write_json_file($files['meta'], $meta);
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
+function voortgang_refresh_contract_as_leader(string $company, string $contractNo, string $statusPath): array
+{
+    $startedAt = time();
+    voortgang_write_refresh_status($statusPath, [
+        'state' => 'running',
+        'started_at' => $startedAt,
+        'company' => $company,
+        'contract_no' => $contractNo,
+    ]);
+
+    try {
+        $row = voortgang_build_contract_row_from_bc($company, $contractNo);
+        voortgang_upsert_contract_row_in_cache($company, $contractNo, $row);
+
+        $result = [
+            'ok' => true,
+            'shared' => false,
+            'removed' => $row === null,
+            'contract_no' => $contractNo,
+            'row' => $row,
+            'refreshed_at' => time(),
+        ];
+        voortgang_write_refresh_status($statusPath, [
+            'state' => 'done',
+            'started_at' => $startedAt,
+            'finished_at' => time(),
+            'company' => $company,
+            'contract_no' => $contractNo,
+            'result' => $result,
+        ]);
+
+        return $result;
+    } catch (Throwable $error) {
+        $result = [
+            'ok' => false,
+            'shared' => false,
+            'removed' => false,
+            'contract_no' => $contractNo,
+            'error' => $error->getMessage(),
+            'refreshed_at' => time(),
+        ];
+        voortgang_write_refresh_status($statusPath, [
+            'state' => 'error',
+            'started_at' => $startedAt,
+            'finished_at' => time(),
+            'company' => $company,
+            'contract_no' => $contractNo,
+            'result' => $result,
+        ]);
+
+        return $result;
+    }
+}
+
+/**
+ * Ververst één contract uit BC. Gelijktijdige clients meeliften op dezelfde job.
+ */
+function voortgang_refresh_contract(string $company, string $contractNo): array
+{
+    $company = trim($company);
+    $contractNo = trim($contractNo);
+    if ($company === '' || $contractNo === '') {
+        throw new InvalidArgumentException('Bedrijf of contractnummer ontbreekt.');
+    }
+
+    $paths = voortgang_refresh_job_paths($company, $contractNo);
+    $lock = fopen($paths['lock'], 'c+');
+    if ($lock === false) {
+        throw new RuntimeException('Refresh-lock kon niet worden geopend.');
+    }
+
+    $requestStarted = time();
+    $waitedForLock = false;
+
+    try {
+        if (!flock($lock, LOCK_EX | LOCK_NB)) {
+            $waitedForLock = true;
+            if (!flock($lock, LOCK_EX)) {
+                throw new RuntimeException('Refresh-lock kon niet worden verkregen.');
+            }
+        }
+
+        if ($waitedForLock) {
+            $status = voortgang_read_refresh_status($paths['status']);
+            $state = is_array($status) ? (string) ($status['state'] ?? '') : '';
+            $finishedAt = is_array($status) ? (int) ($status['finished_at'] ?? 0) : 0;
+            if (($state === 'done' || $state === 'error') && $finishedAt >= ($requestStarted - 1)) {
+                $result = is_array($status['result'] ?? null) ? $status['result'] : null;
+                if (is_array($result)) {
+                    $result['shared'] = true;
+
+                    return $result;
+                }
+            }
+        }
+
+        return voortgang_refresh_contract_as_leader($company, $contractNo, $paths['status']);
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
 }
