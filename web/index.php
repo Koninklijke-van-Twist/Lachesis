@@ -396,7 +396,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         .voortgang-alert { border: 1px solid #fecaca; background: #fef2f2; color: var(--kvt-danger); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; }
         .voortgang-alert-warn { border-color: #fdba74; background: #fff7ed; color: #9a3412; }
         .voortgang-muted { color: var(--kvt-muted); }
-        .voortgang-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-left: 34px; }
+        .voortgang-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-left: 36px; }
         table.voortgang-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; min-width: 1280px; }
         table.voortgang-table th, table.voortgang-table td {
             border-bottom: 1px solid var(--kvt-line);
@@ -434,12 +434,21 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             font-size: 0.78rem;
         }
         table.voortgang-table td.num, table.voortgang-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        table.voortgang-table th:first-child, table.voortgang-table td:first-child { position: sticky; left: 0; z-index: 1; min-width: 110px; }
+        table.voortgang-table th:first-child, table.voortgang-table td:first-child { position: sticky; left: 0; z-index: 1; min-width: 110px; overflow: visible; }
         table.voortgang-table th:first-child { z-index: 3; }
-        .voortgang-contract-cell { position: relative; }
+        .voortgang-contract-cell { position: relative; overflow: visible; }
+        /* Hit-area in de linker gutter zodat hover blijft tot je op ♻️ klikt. */
+        .voortgang-contract-cell::before {
+            content: '';
+            position: absolute;
+            left: -36px;
+            top: 0;
+            bottom: 0;
+            width: 36px;
+        }
         .voortgang-row-refresh {
             position: absolute;
-            left: -30px;
+            left: -32px;
             top: 50%;
             transform: translateY(-50%);
             width: 28px;
@@ -448,14 +457,18 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             padding: 0;
             border: 0;
             border-radius: 8px;
-            background: transparent;
+            background: #fff;
             color: var(--kvt-main-blue);
             font-size: 1rem;
             line-height: 1;
             cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             opacity: 0;
             pointer-events: none;
-            z-index: 4;
+            z-index: 5;
+            box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.06);
         }
         .voortgang-row-refresh:hover,
         .voortgang-row-refresh:focus-visible {
@@ -474,7 +487,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         }
         @media (hover: none) {
             .voortgang-row-refresh {
-                opacity: 0.75;
+                opacity: 0.85;
                 pointer-events: auto;
             }
         }
