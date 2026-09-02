@@ -22,15 +22,15 @@ const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,Invoice_Period,KVT_M
 
 /** Kolomvolgorde van status-totalen. */
 const VOORTGANG_STATUSES = [
-    'Afgesloten',
-    'Geannuleerd',
-    'Gecontroleerd',
-    'Gefactureerd',
+    'Open',
     'Gepland',
     'Onderhanden',
-    'Ondertekend',
-    'Open',
     'Uitgevoerd',
+    'Ondertekend',
+    'Gecontroleerd',
+    'Gefactureerd',
+    'Geannuleerd',
+    'Afgesloten',
 ];
 
 /** Voortgang = (deze statussen) / totaal werkorders. */
