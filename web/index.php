@@ -428,11 +428,6 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         }
         table.voortgang-table th.is-sorted-asc::after { content: '▲'; }
         table.voortgang-table th.is-sorted-desc::after { content: '▼'; }
-        table.voortgang-table th.voortgang-status-col {
-            text-transform: none;
-            letter-spacing: 0;
-            font-size: 0.78rem;
-        }
         table.voortgang-table td.num, table.voortgang-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
         table.voortgang-table th:first-child, table.voortgang-table td:first-child { position: sticky; left: 0; z-index: 1; min-width: 110px; overflow: visible; }
         table.voortgang-table th:first-child { z-index: 3; }
@@ -670,7 +665,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                             <th data-sort="invoice_period" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.invoice_period')) ?></th>
                             <?php foreach (VOORTGANG_STATUSES as $status): ?>
                                 <?php $statusSortKey = 'status_' . strtolower($status); ?>
-                                <th class="num voortgang-status-col" data-sort="<?= voortgang_h($statusSortKey) ?>" data-sort-type="number"><?= voortgang_h(voortgang_status_column_label($status)) ?></th>
+                                <th class="num" data-sort="<?= voortgang_h($statusSortKey) ?>" data-sort-type="number"><?= voortgang_h($status) ?></th>
                             <?php endforeach; ?>
                             <th class="num" data-sort="total" data-sort-type="number"><?= voortgang_h(LOC('voortgang.col.total')) ?></th>
                             <th class="num is-sorted-desc" data-sort="progress" data-sort-type="number"><?= voortgang_h(LOC('voortgang.col.progress')) ?></th>

@@ -63,7 +63,7 @@ function voortgang_xlsx_headers(): array
         LOC('voortgang.col.invoice_period'),
     ];
     foreach (VOORTGANG_STATUSES as $status) {
-        $headers[] = voortgang_status_column_label($status);
+        $headers[] = $status;
     }
 
     $headers[] = LOC('voortgang.col.total');
