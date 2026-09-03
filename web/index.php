@@ -253,10 +253,8 @@ $bcWebClient = [
     'invoice_page' => VOORTGANG_BC_PAGE_SALES_INVOICE,
 ];
 if ($company !== '' && !$needsCompanyChoice) {
-    $environment = trim((string) (is_array($cache) ? ($cache['_meta']['environment'] ?? '') : ''));
-    if ($environment === '') {
-        $environment = auth_get_primary_environment();
-    }
+    $cachedEnvironment = trim((string) (is_array($cache) ? ($cache['_meta']['environment'] ?? '') : ''));
+    $environment = voortgang_bc_webclient_environment($company, $cachedEnvironment);
     $bcWebClient['base'] = voortgang_bc_webclient_base_from_environment($environment);
 }
 

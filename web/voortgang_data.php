@@ -294,9 +294,38 @@ function voortgang_bc_webclient_base_from_environment(string $environment): stri
     return $scheme . '://' . $host . '/' . rawurlencode($environment) . '/';
 }
 
+/**
+ * Webclient-environment uit auth.php $environment, nooit uit $auth_list-fallback of stale cache.
+ */
+function voortgang_bc_webclient_environment(string $company = '', string $cachedEnvironment = ''): string
+{
+    $active = auth_get_active_environments();
+    if ($active === []) {
+        return '';
+    }
+
+    $cachedEnvironment = trim($cachedEnvironment);
+    if ($cachedEnvironment !== '' && in_array($cachedEnvironment, $active, true)) {
+        return $cachedEnvironment;
+    }
+
+    $company = trim($company);
+    $knownMap = is_array($GLOBALS['demeter_company_environment_map'] ?? null)
+        ? $GLOBALS['demeter_company_environment_map']
+        : [];
+    if ($company !== '' && isset($knownMap[$company])) {
+        $mapped = trim((string) $knownMap[$company]);
+        if ($mapped !== '' && in_array($mapped, $active, true)) {
+            return $mapped;
+        }
+    }
+
+    return (string) $active[0];
+}
+
 function voortgang_bc_webclient_base(string $company): string
 {
-    return voortgang_bc_webclient_base_from_environment(auth_get_environment_for_company($company, 300));
+    return voortgang_bc_webclient_base_from_environment(voortgang_bc_webclient_environment($company));
 }
 
 function voortgang_resolve_next_url(string $currentUrl, mixed $next): string
