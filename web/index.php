@@ -521,7 +521,13 @@ if ($company !== '' && !$needsCompanyChoice) {
         .voortgang-pager-status { color: var(--kvt-muted); font-size: 0.92rem; }
         .voortgang-modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: none; align-items: flex-end; justify-content: center; z-index: 13000; padding: 0; }
         .voortgang-modal-backdrop.is-open { display: flex; }
-        .voortgang-modal { width: min(720px, 100%); max-height: 92vh; overflow: auto; background: #fff; border-radius: 16px 16px 0 0; padding: 16px; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25); }
+        .voortgang-modal { width: min(920px, 100%); max-height: 92vh; overflow: auto; background: #fff; border-radius: 16px 16px 0 0; padding: 16px; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25); }
+        .voortgang-modal .voortgang-table-wrap { padding-left: 0; }
+        .voortgang-proforma-summary { margin: 0 0 12px; color: var(--kvt-text); font-weight: 700; line-height: 1.45; }
+        .voortgang-proforma-amount { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; font-variant-numeric: tabular-nums; }
+        .voortgang-modal-table th[title], .voortgang-modal-table td[title] { cursor: help; }
+        .voortgang-modal-table th.num, .voortgang-modal-table td.num { white-space: nowrap; }
+        #voortgang-proforma-lines-backdrop { z-index: 14000; }
         .voortgang-modal-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; position: sticky; top: 0; background: #fff; padding-bottom: 8px; border-bottom: 1px solid var(--kvt-line); }
         .voortgang-modal-close { border: 0; background: transparent; font-size: 1.4rem; line-height: 1; cursor: pointer; color: var(--kvt-muted); padding: 4px 8px; }
         .voortgang-modal-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
@@ -775,6 +781,16 @@ if ($company !== '' && !$needsCompanyChoice) {
     </div>
 </div>
 
+<div id="voortgang-proforma-lines-backdrop" class="voortgang-modal-backdrop" aria-hidden="true">
+    <div class="voortgang-modal" role="dialog" aria-modal="true" aria-labelledby="voortgang-proforma-lines-title">
+        <div class="voortgang-modal-header">
+            <h2 id="voortgang-proforma-lines-title"><?= voortgang_h(LOC('voortgang.modal.proforma_lines_title')) ?></h2>
+            <button type="button" class="voortgang-modal-close" id="voortgang-proforma-lines-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+        </div>
+        <div class="voortgang-table-wrap" id="voortgang-proforma-lines-body"></div>
+    </div>
+</div>
+
 <div
     id="voortgang-company-pick-backdrop"
     class="voortgang-modal-backdrop<?= $needsCompanyChoice ? ' is-open is-locked' : '' ?>"
@@ -838,6 +854,12 @@ if ($company !== '' && !$needsCompanyChoice) {
     var modalTitle = document.getElementById('voortgang-modal-title');
     var modalBody = document.getElementById('voortgang-modal-body');
     var modalClose = document.getElementById('voortgang-modal-close');
+    var linesBackdrop = document.getElementById('voortgang-proforma-lines-backdrop');
+    var linesTitle = document.getElementById('voortgang-proforma-lines-title');
+    var linesBody = document.getElementById('voortgang-proforma-lines-body');
+    var linesClose = document.getElementById('voortgang-proforma-lines-close');
+    var proformaBreakdownCache = {};
+    var openProformaContract = '';
     var companyPickBackdrop = document.getElementById('voortgang-company-pick-backdrop');
     var companyWelcomeBackdrop = document.getElementById('voortgang-company-welcome-backdrop');
     var companyWelcomeClose = document.getElementById('voortgang-company-welcome-close');
@@ -875,6 +897,14 @@ if ($company !== '' && !$needsCompanyChoice) {
         'proforma_empty' => LOC('voortgang.modal.proforma_empty'),
         'proforma_no' => LOC('voortgang.col.proforma_no'),
         'proforma_amount' => LOC('voortgang.col.proforma_amount'),
+        'proforma_amount_plain' => LOC('voortgang.col.amount'),
+        'proforma_no_contract' => LOC('voortgang.col.proforma_no_contract'),
+        'proforma_other_tooltip' => LOC('voortgang.proforma.other_tooltip'),
+        'proforma_unassigned_tooltip' => LOC('voortgang.proforma.unassigned_tooltip'),
+        'proforma_this_progress' => LOC('voortgang.proforma.this_progress'),
+        'proforma_other_progress' => LOC('voortgang.proforma.other_progress'),
+        'proforma_lines_title' => LOC('voortgang.modal.proforma_lines_title'),
+        'contract_no' => LOC('voortgang.col.contract_no'),
         'modal_loading' => LOC('voortgang.modal.loading'),
         'total' => LOC('voortgang.col.total'),
         'filter_all' => LOC('voortgang.filter.all'),
@@ -996,6 +1026,11 @@ if ($company !== '' && !$needsCompanyChoice) {
 
     function applyRowPayload(tr, row) {
         var contractNo = row.contract_no || '';
+        Object.keys(proformaBreakdownCache).forEach(function (key) {
+            if (key === contractNo || key.indexOf(contractNo + '\n') === 0) {
+                delete proformaBreakdownCache[key];
+            }
+        });
         contractData[contractNo] = {
             contract_no: contractNo,
             description: row.description || '',
@@ -1511,12 +1546,22 @@ if ($company !== '' && !$needsCompanyChoice) {
         }
     }
 
+    function closeLinesModal() {
+        if (!linesBackdrop) {
+            return;
+        }
+        linesBackdrop.classList.remove('is-open');
+        linesBackdrop.setAttribute('aria-hidden', 'true');
+    }
+
     function closeModal() {
+        closeLinesModal();
         if (!backdrop) {
             return;
         }
         backdrop.classList.remove('is-open');
         backdrop.setAttribute('aria-hidden', 'true');
+        openProformaContract = '';
     }
 
     function closeCompanyWelcome() {
@@ -1556,42 +1601,124 @@ if ($company !== '' && !$needsCompanyChoice) {
         return items;
     }
 
-    function proformaItemsFor(contractNo) {
-        var entry = contractData[contractNo] || {};
-        var filtered = filterItems(entry.items || []);
-        var byNo = {};
+    function formatLabel(template, value) {
+        return String(template || '').replace('%s', String(value == null ? '' : value));
+    }
+
+    function proformaWorkorderNos(contractNo) {
+        var filtered = filterItems((contractData[contractNo] || {}).items || []);
+        var nos = [];
         filtered.forEach(function (item) {
-            var docs = Array.isArray(item.proformas) ? item.proformas : [];
-            docs.forEach(function (doc) {
-                if (!doc) {
-                    return;
-                }
-                var no = String(doc.no || '');
-                var amount = Number(doc.amount || 0);
-                if (!no || !isFinite(amount) || amount <= 0) {
-                    return;
-                }
-                byNo[no] = (byNo[no] || 0) + amount;
+            if (item && item.no && Number(item.proforma_amount || 0) > 0) {
+                nos.push(item.no);
+            }
+        });
+        return nos;
+    }
+
+    function proformaCacheKey(contractNo, nos) {
+        return contractNo + '\n' + nos.slice().sort().join(',');
+    }
+
+    function otherContractLabel(key) {
+        return key === '' ? (labels.proforma_no_contract || '') : key;
+    }
+
+    function otherContractTooltip(key) {
+        if (key === '') {
+            return labels.proforma_unassigned_tooltip || '';
+        }
+        return formatLabel(labels.proforma_other_tooltip || '', key);
+    }
+
+    function otherContractKeys(breakdown) {
+        if (breakdown && Array.isArray(breakdown.other_contracts) && breakdown.other_contracts.length) {
+            return breakdown.other_contracts.slice();
+        }
+        var seen = {};
+        ((breakdown && breakdown.items) || []).forEach(function (item) {
+            Object.keys((item && item.others) || {}).forEach(function (key) {
+                seen[key] = true;
             });
         });
-        var items = Object.keys(byNo).map(function (no) {
-            return { no: no, amount: byNo[no] };
+        var keys = Object.keys(seen);
+        keys.sort(function (a, b) {
+            if (a === '' && b !== '') {
+                return 1;
+            }
+            if (b === '' && a !== '') {
+                return -1;
+            }
+            return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
         });
-        items.sort(function (a, b) {
-            return String(a.no).localeCompare(String(b.no), undefined, { numeric: true, sensitivity: 'base' });
-        });
-        return items;
+        return keys;
     }
 
-    function hasCachedProformaAmount(contractNo) {
-        var filtered = filterItems((contractData[contractNo] || {}).items || []);
-        return filtered.some(function (item) {
-            var amount = Number(item.proforma_amount || 0);
-            return isFinite(amount) && amount > 0;
+    function amountButtonHtml(amount, attrs) {
+        var value = Number(amount);
+        if (!isFinite(value) || value <= 0) {
+            return '<span class="voortgang-muted">-</span>';
+        }
+        return '<button type="button" class="voortgang-proforma-amount" ' + attrs + '>'
+            + escapeHtml(formatMoneyJs(value)) + '</button>';
+    }
+
+    function progressFromLines(lines) {
+        var seen = {};
+        var total = 0;
+        var done = 0;
+        (lines || []).forEach(function (line) {
+            var no = String((line && line.no) || '');
+            if (!no || seen[no]) {
+                return;
+            }
+            seen[no] = true;
+            total += 1;
+            if (progressStatuses.indexOf(String(line.status || '')) !== -1) {
+                done += 1;
+            }
+        });
+        if (total <= 0) {
+            return 0;
+        }
+        return Math.round((done / total) * 1000) / 10;
+    }
+
+    function linesForAmountCell(item, group, otherContract) {
+        return ((item && item.lines) || []).filter(function (line) {
+            if (!line) {
+                return false;
+            }
+            if (group === 'this') {
+                return !!line.this_contract;
+            }
+            return !line.this_contract && String(line.contract_no || '') === String(otherContract || '');
         });
     }
 
-    function renderProformaTable(contractNo, items, loading) {
+    function renderProformaSummary(breakdown, otherKeys) {
+        var html = '<p class="voortgang-proforma-summary">';
+        html += escapeHtml(formatLabel(labels.proforma_this_progress || '', formatPercentJs(breakdown.this_progress || 0)));
+        if (otherKeys.length) {
+            var otherProgress = breakdown.other_progress;
+            if (otherProgress == null) {
+                var otherLines = [];
+                (breakdown.items || []).forEach(function (item) {
+                    (item.lines || []).forEach(function (line) {
+                        if (line && !line.this_contract) {
+                            otherLines.push(line);
+                        }
+                    });
+                });
+                otherProgress = progressFromLines(otherLines);
+            }
+            html += ' ' + escapeHtml(formatLabel(labels.proforma_other_progress || '', formatPercentJs(otherProgress)));
+        }
+        html += '</p>';
+        return html;
+    }
+
+    function renderProformaTable(contractNo, breakdown, loading) {
         if (!modalBody) {
             return;
         }
@@ -1602,30 +1729,41 @@ if ($company !== '' && !$needsCompanyChoice) {
             modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.modal_loading || '…') + '</p>';
             return;
         }
-        if (!items || items.length === 0) {
+        var items = (breakdown && Array.isArray(breakdown.items)) ? breakdown.items : [];
+        if (items.length === 0) {
             modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.proforma_empty) + '</p>';
             return;
         }
-        var html = '<table class="voortgang-modal-table"><thead><tr>';
+        var otherKeys = otherContractKeys(breakdown);
+        var html = renderProformaSummary(breakdown || {}, otherKeys);
+        html += '<table class="voortgang-modal-table"><thead><tr>';
         html += '<th>' + escapeHtml(labels.proforma_no || labels.workorder_no) + '</th>';
         html += '<th class="num">' + escapeHtml(labels.proforma_amount) + '</th>';
+        otherKeys.forEach(function (key) {
+            html += '<th class="num" title="' + escapeHtml(otherContractTooltip(key)) + '">'
+                + escapeHtml(otherContractLabel(key)) + '</th>';
+        });
         html += '</tr></thead><tbody>';
         items.forEach(function (item) {
-            html += '<tr><td>' + bcLinkHtml(bcWeb.invoice_page, item.no) + '</td><td class="num">'
-                + escapeHtml(formatMoneyJs(item.amount)) + '</td></tr>';
+            var pfNo = String((item && item.no) || '');
+            html += '<tr><td>' + bcLinkHtml(bcWeb.invoice_page, pfNo) + '</td>';
+            html += '<td class="num">' + amountButtonHtml(item.this_amount, 'data-proforma="'
+                + escapeHtml(pfNo) + '" data-group="this"') + '</td>';
+            otherKeys.forEach(function (key) {
+                var otherAmount = Number(((item.others || {})[key]) || 0);
+                html += '<td class="num" title="' + escapeHtml(otherContractTooltip(key)) + '">'
+                    + amountButtonHtml(otherAmount, 'data-proforma="' + escapeHtml(pfNo)
+                        + '" data-group="other" data-other-contract="' + escapeHtml(key) + '"')
+                    + '</td>';
+            });
+            html += '</tr>';
         });
         html += '</tbody></table>';
         modalBody.innerHTML = html;
     }
 
-    function fetchProformaDocs(contractNo) {
-        var filtered = filterItems((contractData[contractNo] || {}).items || []);
-        var nos = [];
-        filtered.forEach(function (item) {
-            if (item && item.no && Number(item.proforma_amount || 0) > 0) {
-                nos.push(item.no);
-            }
-        });
+    function fetchProformaBreakdown(contractNo) {
+        var nos = proformaWorkorderNos(contractNo);
         var url = 'refresh_contract.php?mode=proforma&company=' + encodeURIComponent(companyName)
             + '&contract=' + encodeURIComponent(contractNo)
             + '&_t=' + Date.now();
@@ -1640,7 +1778,8 @@ if ($company !== '' && !$needsCompanyChoice) {
             return response.text().then(function (text) {
                 var data = null;
                 try {
-                    data = text ? JSON.parse(text) : null;
+                    var jsonStart = text ? text.indexOf('{') : -1;
+                    data = jsonStart >= 0 ? JSON.parse(text.slice(jsonStart)) : null;
                 } catch (e) {
                     data = null;
                 }
@@ -1649,9 +1788,14 @@ if ($company !== '' && !$needsCompanyChoice) {
         }).then(function (result) {
             var data = result.data || {};
             if (!data.ok || !Array.isArray(data.items)) {
-                return [];
+                return null;
             }
-            return data.items;
+            return {
+                this_progress: Number(data.this_progress || 0),
+                other_progress: data.other_progress == null ? null : Number(data.other_progress),
+                other_contracts: Array.isArray(data.other_contracts) ? data.other_contracts : [],
+                items: data.items
+            };
         });
     }
 
@@ -1659,19 +1803,89 @@ if ($company !== '' && !$needsCompanyChoice) {
         if (!modalBody || !backdrop) {
             return;
         }
-        var items = proformaItemsFor(contractNo);
-        var needsFetch = items.length === 0 && hasCachedProformaAmount(contractNo) && !!companyName;
-        renderProformaTable(contractNo, items, needsFetch);
-        backdrop.classList.add('is-open');
-        backdrop.setAttribute('aria-hidden', 'false');
-        if (!needsFetch) {
+        openProformaContract = contractNo;
+        var cacheKey = proformaCacheKey(contractNo, proformaWorkorderNos(contractNo));
+        var cached = proformaBreakdownCache[cacheKey];
+        if (cached) {
+            renderProformaTable(contractNo, cached, false);
+            backdrop.classList.add('is-open');
+            backdrop.setAttribute('aria-hidden', 'false');
             return;
         }
-        fetchProformaDocs(contractNo).then(function (docs) {
-            renderProformaTable(contractNo, docs, false);
+        renderProformaTable(contractNo, null, true);
+        backdrop.classList.add('is-open');
+        backdrop.setAttribute('aria-hidden', 'false');
+        if (!companyName) {
+            renderProformaTable(contractNo, { items: [] }, false);
+            return;
+        }
+        fetchProformaBreakdown(contractNo).then(function (breakdown) {
+            if (openProformaContract !== contractNo) {
+                return;
+            }
+            if (breakdown) {
+                proformaBreakdownCache[cacheKey] = breakdown;
+            }
+            renderProformaTable(contractNo, breakdown, false);
         }).catch(function () {
-            renderProformaTable(contractNo, [], false);
+            if (openProformaContract !== contractNo) {
+                return;
+            }
+            renderProformaTable(contractNo, { items: [] }, false);
         });
+    }
+
+    function findProformaItem(breakdown, proformaNo) {
+        var items = (breakdown && breakdown.items) || [];
+        for (var i = 0; i < items.length; i += 1) {
+            if (items[i] && String(items[i].no || '') === String(proformaNo || '')) {
+                return items[i];
+            }
+        }
+        return null;
+    }
+
+    function openProformaLines(proformaNo, group, otherContract) {
+        if (!linesBody || !linesBackdrop) {
+            return;
+        }
+        var cacheKey = proformaCacheKey(openProformaContract, proformaWorkorderNos(openProformaContract));
+        var item = findProformaItem(proformaBreakdownCache[cacheKey], proformaNo);
+        var lines = linesForAmountCell(item, group, otherContract);
+        var columnLabel = group === 'this'
+            ? (labels.proforma_amount || '')
+            : otherContractLabel(otherContract);
+        if (linesTitle) {
+            linesTitle.textContent = (labels.proforma_lines_title || labels.proforma_title)
+                + (proformaNo ? ' · ' + proformaNo : '')
+                + (columnLabel ? ' · ' + columnLabel : '');
+        }
+        var html = '<p class="voortgang-proforma-summary">'
+            + escapeHtml(formatPercentJs(progressFromLines(lines)))
+            + '</p>';
+        if (lines.length === 0) {
+            html += '<p class="voortgang-muted">' + escapeHtml(labels.empty) + '</p>';
+        } else {
+            html += '<table class="voortgang-modal-table"><thead><tr>';
+            html += '<th>' + escapeHtml(labels.workorder_no) + '</th>';
+            html += '<th>' + escapeHtml(labels.contract_no) + '</th>';
+            html += '<th class="num">' + escapeHtml(labels.proforma_amount_plain || labels.proforma_amount) + '</th>';
+            html += '<th>' + escapeHtml(labels.status) + '</th>';
+            html += '</tr></thead><tbody>';
+            lines.forEach(function (line) {
+                var contractNo = String(line.contract_no || '');
+                html += '<tr><td>' + bcLinkHtml(bcWeb.workorder_page, line.no) + '</td>';
+                html += '<td>' + (contractNo
+                    ? escapeHtml(contractNo)
+                    : escapeHtml(labels.proforma_no_contract || '—')) + '</td>';
+                html += '<td class="num">' + escapeHtml(formatMoneyJs(line.amount)) + '</td>';
+                html += '<td>' + escapeHtml(line.status || '') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        linesBody.innerHTML = html;
+        linesBackdrop.classList.add('is-open');
+        linesBackdrop.setAttribute('aria-hidden', 'false');
     }
 
     function openWorkorders(contractNo, status) {
@@ -1825,6 +2039,30 @@ if ($company !== '' && !$needsCompanyChoice) {
             }
         });
     }
+    if (modalBody) {
+        modalBody.addEventListener('click', function (event) {
+            var amountButton = event.target.closest('.voortgang-proforma-amount');
+            if (!amountButton) {
+                return;
+            }
+            event.preventDefault();
+            openProformaLines(
+                amountButton.getAttribute('data-proforma') || '',
+                amountButton.getAttribute('data-group') || 'this',
+                amountButton.getAttribute('data-other-contract') || ''
+            );
+        });
+    }
+    if (linesClose) {
+        linesClose.addEventListener('click', closeLinesModal);
+    }
+    if (linesBackdrop) {
+        linesBackdrop.addEventListener('click', function (event) {
+            if (event.target === linesBackdrop) {
+                closeLinesModal();
+            }
+        });
+    }
     if (companyPickBackdrop) {
         companyPickBackdrop.addEventListener('click', function (event) {
             var option = event.target.closest('.voortgang-company-option');
@@ -1857,6 +2095,10 @@ if ($company !== '' && !$needsCompanyChoice) {
         }
         if (companyWelcomeBackdrop && companyWelcomeBackdrop.classList.contains('is-open')) {
             closeCompanyWelcome();
+            return;
+        }
+        if (linesBackdrop && linesBackdrop.classList.contains('is-open')) {
+            closeLinesModal();
             return;
         }
         closeModal();

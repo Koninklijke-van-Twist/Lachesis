@@ -12,6 +12,9 @@ ini_set('memory_limit', '256M');
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
 require_once __DIR__ . '/voortgang_data.php';
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+error_reporting(E_ALL & ~E_DEPRECATED);
 
 /**
  * Functies
@@ -87,11 +90,14 @@ if ($mode === 'proforma') {
     }
 
     try {
-        $items = voortgang_proforma_documents_for_workorders($company, $workorderNos);
+        $breakdown = voortgang_proforma_breakdown_for_workorders($company, $contractNo, $workorderNos);
         voortgang_refresh_send_json([
             'ok' => true,
             'contract_no' => $contractNo,
-            'items' => $items,
+            'this_progress' => $breakdown['this_progress'],
+            'other_progress' => $breakdown['other_progress'],
+            'other_contracts' => $breakdown['other_contracts'],
+            'items' => $breakdown['items'],
         ]);
     } catch (Throwable $error) {
         voortgang_refresh_send_json([
