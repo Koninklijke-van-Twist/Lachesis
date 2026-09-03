@@ -117,6 +117,62 @@ if (isset($_GET['action']) && trim((string) $_GET['action']) === 'save_settings'
     exit;
 }
 
+if (isset($_POST['action']) && trim((string) $_POST['action']) === 'export_modal') {
+    $payload = json_decode((string) ($_POST['payload'] ?? ''), true);
+    $title = trim((string) (is_array($payload) ? ($payload['title'] ?? '') : ''));
+    $headers = [];
+    $rows = [];
+
+    if (is_array($payload)) {
+        $rawHeaders = is_array($payload['headers'] ?? null) ? $payload['headers'] : [];
+        foreach (array_slice($rawHeaders, 0, 60) as $header) {
+            $headers[] = is_scalar($header) ? (string) $header : '';
+        }
+
+        $rawRows = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+        foreach (array_slice($rawRows, 0, 50000) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $values = [];
+            foreach (array_slice(array_values($row), 0, count($headers)) as $value) {
+                if (is_int($value) || is_float($value)) {
+                    $values[] = $value;
+                } elseif (is_scalar($value)) {
+                    $values[] = (string) $value;
+                } else {
+                    $values[] = '';
+                }
+            }
+            $rows[] = $values;
+        }
+    }
+
+    try {
+        if ($headers === [] || $rows === []) {
+            throw new RuntimeException('Geen exporteerbare inhoud.');
+        }
+
+        $sheetTitle = $title !== '' ? $title : LOC('voortgang.btn.excel');
+        $binary = voortgang_build_table_xlsx($headers, $rows, $sheetTitle, 'ModalExport');
+        $filename = voortgang_company_slug($sheetTitle) . '.xlsx';
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Content-Length: ' . (string) strlen($binary));
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        echo $binary;
+        exit;
+    } catch (Throwable $error) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo LOC('voortgang.export.failed');
+        exit;
+    }
+}
+
 $companies = voortgang_cached_companies();
 if ($companies === []) {
     $companies = VOORTGANG_COMPANIES;
@@ -336,6 +392,7 @@ if ($company !== '' && !$needsCompanyChoice) {
         }
         .voortgang-excel { font: inherit; font-weight: 700; background: #15803d; color: #fff; border: 1px solid #15803d; border-radius: 10px; padding: 12px 16px; cursor: pointer; text-decoration: none; display: inline-block; }
         .voortgang-excel:hover { background: #166534; border-color: #166534; color: #fff; }
+        .voortgang-excel[hidden] { display: none; }
         .voortgang-card { background: var(--kvt-panel-bg); border: 1px solid var(--kvt-line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
         .voortgang-card h1, .voortgang-card h2 { margin: 0 0 12px; color: var(--kvt-text); }
         .voortgang-subtitle, .voortgang-meta { color: var(--kvt-muted); margin: 6px 0 0; }
@@ -529,6 +586,8 @@ if ($company !== '' && !$needsCompanyChoice) {
         .voortgang-modal-table th.num, .voortgang-modal-table td.num { white-space: nowrap; }
         #voortgang-proforma-lines-backdrop { z-index: 14000; }
         .voortgang-modal-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; position: sticky; top: 0; background: #fff; padding-bottom: 8px; border-bottom: 1px solid var(--kvt-line); }
+        .voortgang-modal-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+        .voortgang-modal-excel { padding: 8px 12px; border-radius: 8px; }
         .voortgang-modal-close { border: 0; background: transparent; font-size: 1.4rem; line-height: 1; cursor: pointer; color: var(--kvt-muted); padding: 4px 8px; }
         .voortgang-modal-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
         .voortgang-modal-table th, .voortgang-modal-table td { border-bottom: 1px solid var(--kvt-line); padding: 8px 6px; text-align: left; }
@@ -775,7 +834,10 @@ if ($company !== '' && !$needsCompanyChoice) {
     <div class="voortgang-modal" role="dialog" aria-modal="true" aria-labelledby="voortgang-modal-title">
         <div class="voortgang-modal-header">
             <h2 id="voortgang-modal-title"><?= voortgang_h(LOC('voortgang.modal.title')) ?></h2>
-            <button type="button" class="voortgang-modal-close" id="voortgang-modal-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+            <div class="voortgang-modal-actions">
+                <button type="button" class="voortgang-excel voortgang-modal-excel" id="voortgang-modal-excel" hidden><?= voortgang_h(LOC('voortgang.btn.excel')) ?></button>
+                <button type="button" class="voortgang-modal-close" id="voortgang-modal-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+            </div>
         </div>
         <div class="voortgang-table-wrap" id="voortgang-modal-body"></div>
     </div>
@@ -785,7 +847,10 @@ if ($company !== '' && !$needsCompanyChoice) {
     <div class="voortgang-modal" role="dialog" aria-modal="true" aria-labelledby="voortgang-proforma-lines-title">
         <div class="voortgang-modal-header">
             <h2 id="voortgang-proforma-lines-title"><?= voortgang_h(LOC('voortgang.modal.proforma_lines_title')) ?></h2>
-            <button type="button" class="voortgang-modal-close" id="voortgang-proforma-lines-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+            <div class="voortgang-modal-actions">
+                <button type="button" class="voortgang-excel voortgang-modal-excel" id="voortgang-proforma-lines-excel" hidden><?= voortgang_h(LOC('voortgang.btn.excel')) ?></button>
+                <button type="button" class="voortgang-modal-close" id="voortgang-proforma-lines-close" aria-label="<?= voortgang_h(LOC('voortgang.modal.close')) ?>">&times;</button>
+            </div>
         </div>
         <div class="voortgang-table-wrap" id="voortgang-proforma-lines-body"></div>
     </div>
@@ -854,10 +919,13 @@ if ($company !== '' && !$needsCompanyChoice) {
     var modalTitle = document.getElementById('voortgang-modal-title');
     var modalBody = document.getElementById('voortgang-modal-body');
     var modalClose = document.getElementById('voortgang-modal-close');
+    var modalExcel = document.getElementById('voortgang-modal-excel');
     var linesBackdrop = document.getElementById('voortgang-proforma-lines-backdrop');
     var linesTitle = document.getElementById('voortgang-proforma-lines-title');
     var linesBody = document.getElementById('voortgang-proforma-lines-body');
     var linesClose = document.getElementById('voortgang-proforma-lines-close');
+    var linesExcel = document.getElementById('voortgang-proforma-lines-excel');
+    var modalExports = { main: null, lines: null };
     var proformaBreakdownCache = {};
     var openProformaContract = '';
     var companyPickBackdrop = document.getElementById('voortgang-company-pick-backdrop');
@@ -1546,7 +1614,42 @@ if ($company !== '' && !$needsCompanyChoice) {
         }
     }
 
+    function setModalExport(key, data) {
+        var hasRows = !!(data && Array.isArray(data.rows) && data.rows.length);
+        modalExports[key] = hasRows ? data : null;
+        var button = key === 'lines' ? linesExcel : modalExcel;
+        if (button) {
+            button.hidden = !hasRows;
+        }
+    }
+
+    function exportModalData(key) {
+        var data = modalExports[key];
+        if (!data) {
+            return;
+        }
+        var form = document.createElement('form');
+        form.method = 'post';
+        form.action = 'index.php';
+        form.style.display = 'none';
+        [['action', 'export_modal'], ['payload', JSON.stringify(data)]].forEach(function (pair) {
+            var field = document.createElement('input');
+            field.type = 'hidden';
+            field.name = pair[0];
+            field.value = pair[1];
+            form.appendChild(field);
+        });
+        document.body.appendChild(form);
+        form.submit();
+        window.setTimeout(function () {
+            if (form.parentNode) {
+                form.parentNode.removeChild(form);
+            }
+        }, 0);
+    }
+
     function closeLinesModal() {
+        setModalExport('lines', null);
         if (!linesBackdrop) {
             return;
         }
@@ -1556,6 +1659,7 @@ if ($company !== '' && !$needsCompanyChoice) {
 
     function closeModal() {
         closeLinesModal();
+        setModalExport('main', null);
         if (!backdrop) {
             return;
         }
@@ -1722,19 +1826,35 @@ if ($company !== '' && !$needsCompanyChoice) {
         if (!modalBody) {
             return;
         }
+        var modalTitleText = labels.proforma_title + ' · ' + contractNo;
         if (modalTitle) {
-            modalTitle.textContent = labels.proforma_title + ' · ' + contractNo;
+            modalTitle.textContent = modalTitleText;
         }
         if (loading) {
+            setModalExport('main', null);
             modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.modal_loading || '…') + '</p>';
             return;
         }
         var items = (breakdown && Array.isArray(breakdown.items)) ? breakdown.items : [];
         if (items.length === 0) {
+            setModalExport('main', null);
             modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.proforma_empty) + '</p>';
             return;
         }
         var otherKeys = otherContractKeys(breakdown);
+        setModalExport('main', {
+            title: modalTitleText,
+            headers: [labels.proforma_no || labels.workorder_no, labels.proforma_amount].concat(
+                otherKeys.map(otherContractLabel)
+            ),
+            rows: items.map(function (item) {
+                return [String((item && item.no) || ''), Number(item.this_amount || 0)].concat(
+                    otherKeys.map(function (key) {
+                        return Number(((item.others || {})[key]) || 0);
+                    })
+                );
+            })
+        });
         var html = renderProformaSummary(breakdown || {}, otherKeys);
         html += '<table class="voortgang-modal-table"><thead><tr>';
         html += '<th>' + escapeHtml(labels.proforma_no || labels.workorder_no) + '</th>';
@@ -1855,11 +1975,29 @@ if ($company !== '' && !$needsCompanyChoice) {
         var columnLabel = group === 'this'
             ? (labels.proforma_amount || '')
             : otherContractLabel(otherContract);
+        var linesTitleText = (labels.proforma_lines_title || labels.proforma_title)
+            + (proformaNo ? ' · ' + proformaNo : '')
+            + (columnLabel ? ' · ' + columnLabel : '');
         if (linesTitle) {
-            linesTitle.textContent = (labels.proforma_lines_title || labels.proforma_title)
-                + (proformaNo ? ' · ' + proformaNo : '')
-                + (columnLabel ? ' · ' + columnLabel : '');
+            linesTitle.textContent = linesTitleText;
         }
+        setModalExport('lines', {
+            title: linesTitleText,
+            headers: [
+                labels.workorder_no,
+                labels.contract_no,
+                labels.proforma_amount_plain || labels.proforma_amount,
+                labels.status
+            ],
+            rows: lines.map(function (line) {
+                return [
+                    String(line.no || ''),
+                    String(line.contract_no || '') || (labels.proforma_no_contract || ''),
+                    Number(line.amount || 0),
+                    String(line.status || '')
+                ];
+            })
+        });
         var html = '<p class="voortgang-proforma-summary">'
             + escapeHtml(formatPercentJs(progressFromLines(lines)))
             + '</p>';
@@ -1894,9 +2032,17 @@ if ($company !== '' && !$needsCompanyChoice) {
         }
         var items = workordersFor(contractNo, status);
         var titleStatus = status === 'Totaal' ? labels.total : status;
+        var modalTitleText = labels.modal_title + ' · ' + contractNo + ' · ' + titleStatus;
         if (modalTitle) {
-            modalTitle.textContent = labels.modal_title + ' · ' + contractNo + ' · ' + titleStatus;
+            modalTitle.textContent = modalTitleText;
         }
+        setModalExport('main', {
+            title: modalTitleText,
+            headers: [labels.workorder_no, labels.status],
+            rows: items.map(function (item) {
+                return [String(item.no || ''), String(item.status || '')];
+            })
+        });
         if (items.length === 0) {
             modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.empty) + '</p>';
         } else {
@@ -2052,6 +2198,12 @@ if ($company !== '' && !$needsCompanyChoice) {
                 amountButton.getAttribute('data-other-contract') || ''
             );
         });
+    }
+    if (modalExcel) {
+        modalExcel.addEventListener('click', function () { exportModalData('main'); });
+    }
+    if (linesExcel) {
+        linesExcel.addEventListener('click', function () { exportModalData('lines'); });
     }
     if (linesClose) {
         linesClose.addEventListener('click', closeLinesModal);

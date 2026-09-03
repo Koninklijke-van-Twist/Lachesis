@@ -101,17 +101,43 @@ function voortgang_xlsx_export_row(array $row): array
     return $values;
 }
 
-function voortgang_build_excel_xlsx(array $rows): string
+function voortgang_xlsx_table_name(string $name): string
 {
-    $headers = voortgang_xlsx_headers();
+    $name = (string) preg_replace('/[^A-Za-z0-9_]/', '', voortgang_xlsx_sanitize_text($name));
+    if ($name === '' || !preg_match('/^[A-Za-z_]/', $name)) {
+        $name = 'Tabel' . $name;
+    }
+
+    return substr($name, 0, 60);
+}
+
+function voortgang_xlsx_sheet_name(string $name): string
+{
+    $name = trim((string) preg_replace('#[\\\\/\?\*\[\]:]#', ' ', voortgang_xlsx_sanitize_text($name)));
+    if ($name === '') {
+        $name = 'Export';
+    }
+
+    return mb_substr($name, 0, 31);
+}
+
+/**
+ * @param list<string> $headers
+ * @param list<list<string|int|float>> $rows
+ */
+function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetName, string $tableName): string
+{
+    $headers = array_values($headers);
+    if ($headers === []) {
+        $headers = [''];
+    }
     $colCount = count($headers);
-    $rowCount = 1 + count($rows);
-    $endRef = voortgang_xlsx_cell_ref(max(1, $rowCount), $colCount);
-    $tableRef = 'A1:' . $endRef;
+    $sheetName = voortgang_xlsx_sheet_name($sheetName);
+    $tableName = voortgang_xlsx_table_name($tableName);
 
     $sheetRows = '<row r="1">';
     foreach ($headers as $index => $header) {
-        $sheetRows .= voortgang_xlsx_cell_xml(voortgang_xlsx_cell_ref(1, $index + 1), $header);
+        $sheetRows .= voortgang_xlsx_cell_xml(voortgang_xlsx_cell_ref(1, $index + 1), (string) $header);
     }
     $sheetRows .= '</row>';
 
@@ -121,8 +147,13 @@ function voortgang_build_excel_xlsx(array $rows): string
             continue;
         }
         $sheetRows .= '<row r="' . $excelRow . '">';
-        foreach (voortgang_xlsx_export_row($row) as $colIndex => $value) {
+        $colIndex = 0;
+        foreach (array_values($row) as $value) {
+            if ($colIndex >= $colCount) {
+                break;
+            }
             $sheetRows .= voortgang_xlsx_cell_xml(voortgang_xlsx_cell_ref($excelRow, $colIndex + 1), $value);
+            $colIndex++;
         }
         $sheetRows .= '</row>';
         $excelRow++;
@@ -132,13 +163,21 @@ function voortgang_build_excel_xlsx(array $rows): string
     $tableRef = 'A1:' . voortgang_xlsx_cell_ref($lastDataRow, $colCount);
 
     $columnsXml = '';
+    $usedNames = [];
     foreach ($headers as $index => $header) {
-        $name = trim(voortgang_xlsx_sanitize_text($header));
+        $name = trim(voortgang_xlsx_sanitize_text((string) $header));
         if ($name === '') {
             $name = 'Kolom' . (string) ($index + 1);
         }
+        $unique = $name;
+        $suffix = 2;
+        while (isset($usedNames[mb_strtolower($unique)])) {
+            $unique = $name . ' ' . (string) $suffix;
+            $suffix++;
+        }
+        $usedNames[mb_strtolower($unique)] = true;
         $columnsXml .= '<tableColumn id="' . (string) ($index + 1) . '" name="'
-            . voortgang_xlsx_xml_escape($name) . '"/>';
+            . voortgang_xlsx_xml_escape($unique) . '"/>';
     }
 
     $sheetXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -153,7 +192,7 @@ function voortgang_build_excel_xlsx(array $rows): string
 
     $tableXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-        . ' id="1" name="ContractVoortgang" displayName="ContractVoortgang" ref="' . $tableRef . '" totalsRowShown="0">'
+        . ' id="1" name="' . $tableName . '" displayName="' . $tableName . '" ref="' . $tableRef . '" totalsRowShown="0">'
         . '<autoFilter ref="' . $tableRef . '"/>'
         . '<tableColumns count="' . (string) $colCount . '">' . $columnsXml . '</tableColumns>'
         . '<tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>'
@@ -167,7 +206,7 @@ function voortgang_build_excel_xlsx(array $rows): string
     $workbookXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
         . ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        . '<sheets><sheet name="Contractvoortgang" sheetId="1" r:id="rId1"/></sheets>'
+        . '<sheets><sheet name="' . voortgang_xlsx_xml_escape($sheetName) . '" sheetId="1" r:id="rId1"/></sheets>'
         . '</workbook>';
 
     $workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -222,4 +261,21 @@ function voortgang_build_excel_xlsx(array $rows): string
     }
 
     return $binary;
+}
+
+function voortgang_build_excel_xlsx(array $rows): string
+{
+    $values = [];
+    foreach ($rows as $row) {
+        if (is_array($row)) {
+            $values[] = voortgang_xlsx_export_row($row);
+        }
+    }
+
+    return voortgang_build_table_xlsx(
+        voortgang_xlsx_headers(),
+        $values,
+        'Contractvoortgang',
+        'ContractVoortgang'
+    );
 }
