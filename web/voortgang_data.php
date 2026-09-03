@@ -104,7 +104,7 @@ function voortgang_empty_counts(): array
 
 /**
  * @param list<array<string, mixed>> $items
- * @return list<array{no:string,status:string,task_code:string,start_date:string}>
+ * @return list<array{no:string,status:string,task_code:string,start_date:string,proforma_amount:float,proformas:list<array{no:string,amount:float}>}>
  */
 function voortgang_filter_workorder_items(array $items, bool $hidePd, string $dateFrom, string $dateTo): array
 {
@@ -138,6 +138,7 @@ function voortgang_filter_workorder_items(array $items, bool $hidePd, string $da
             'task_code' => $taskCode,
             'start_date' => $startDate,
             'proforma_amount' => voortgang_scalar_float($item['proforma_amount'] ?? 0),
+            'proformas' => voortgang_normalize_proforma_documents($item['proformas'] ?? []),
         ];
     }
 
@@ -276,6 +277,26 @@ function voortgang_bc_auth(string $company = ''): array
         'environment' => $env,
         'auth' => $authConfig,
     ];
+}
+
+function voortgang_bc_webclient_base_from_environment(string $environment): string
+{
+    global $baseUrl;
+
+    $environment = trim($environment);
+    $rawBase = trim((string) ($baseUrl ?? ''));
+    $scheme = parse_url($rawBase, PHP_URL_SCHEME) ?: 'https';
+    $host = parse_url($rawBase, PHP_URL_HOST);
+    if (!is_string($host) || $host === '' || $environment === '') {
+        return '';
+    }
+
+    return $scheme . '://' . $host . '/' . rawurlencode($environment) . '/';
+}
+
+function voortgang_bc_webclient_base(string $company): string
+{
+    return voortgang_bc_webclient_base_from_environment(auth_get_environment_for_company($company, 300));
 }
 
 function voortgang_resolve_next_url(string $currentUrl, mixed $next): string
@@ -480,6 +501,7 @@ function voortgang_append_workorder_item(array &$rows, string $contractNo, array
         'task_code' => voortgang_scalar_string($bcRow['Task_Code'] ?? ''),
         'start_date' => voortgang_parse_odata_date($bcRow['Start_Date'] ?? ''),
         'proforma_amount' => 0.0,
+        'proformas' => [],
     ];
 
     return true;
@@ -530,40 +552,181 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
 }
 
 /**
- * @return array<string, float> workorder No => totaal Line_Amount
+ * @param list<mixed> $documents
+ * @return list<array{no:string,amount:float}>
  */
-function voortgang_fetch_proforma_amounts_by_workorder(string $company): array
+function voortgang_normalize_proforma_documents(mixed $documents): array
 {
-    $amounts = [];
-    $docType = bc_escape_odata_string(VOORTGANG_PROFORMA_DOCUMENT_TYPE);
+    if (!is_array($documents)) {
+        return [];
+    }
 
-    voortgang_paginate_entity(
-        $company,
-        VOORTGANG_PROFORMA_ENTITY,
-        [
-            '$select' => VOORTGANG_PROFORMA_SELECT,
-            '$filter' => "Document_Type eq '" . $docType . "' and Job_Task_No ne ''",
-        ],
-        static function (array $row) use (&$amounts): bool {
-            $workorderNo = voortgang_scalar_string($row['Job_Task_No'] ?? '');
-            if ($workorderNo === '') {
-                return false;
-            }
-
-            $amounts[$workorderNo] = ($amounts[$workorderNo] ?? 0.0)
-                + voortgang_scalar_float($row['Line_Amount'] ?? 0);
-
-            return true;
+    $list = [];
+    foreach ($documents as $item) {
+        if (!is_array($item)) {
+            continue;
         }
-    );
+        $no = voortgang_scalar_string($item['no'] ?? '');
+        $amount = voortgang_scalar_float($item['amount'] ?? 0);
+        if ($no === '' || $amount <= 0) {
+            continue;
+        }
+        $list[] = [
+            'no' => $no,
+            'amount' => $amount,
+        ];
+    }
 
-    return $amounts;
+    usort($list, static function (array $a, array $b): int {
+        return strnatcasecmp($a['no'], $b['no']);
+    });
+
+    return array_values($list);
 }
 
 /**
- * @param array<string, float> $proformaByWo
+ * @param array<string, float> $documents
+ * @return list<array{no:string,amount:float}>
  */
-function voortgang_apply_proforma_map_to_rows(array &$rows, array $proformaByWo): void
+function voortgang_proforma_documents_from_map(array $documents): array
+{
+    $list = [];
+    foreach ($documents as $no => $amount) {
+        $list[] = [
+            'no' => voortgang_scalar_string((string) $no),
+            'amount' => voortgang_scalar_float($amount),
+        ];
+    }
+
+    return voortgang_normalize_proforma_documents($list);
+}
+
+/**
+ * @param list<string> $values
+ */
+function voortgang_odata_eq_or_filter(string $field, array $values): string
+{
+    $parts = [];
+    foreach ($values as $value) {
+        $value = trim((string) $value);
+        if ($value === '') {
+            continue;
+        }
+        $parts[] = $field . " eq '" . bc_escape_odata_string($value) . "'";
+    }
+    if ($parts === []) {
+        return '';
+    }
+    if (count($parts) === 1) {
+        return $parts[0];
+    }
+
+    return '(' . implode(' or ', $parts) . ')';
+}
+
+/**
+ * @param list<string>|null $workorderNos null = hele bedrijf, [] = niets
+ * @return array<string, array{amount:float, documents: array<string, float>}>
+ */
+function voortgang_fetch_proforma_map(string $company, ?array $workorderNos = null): array
+{
+    if (is_array($workorderNos) && $workorderNos === []) {
+        return [];
+    }
+
+    $map = [];
+    $docType = bc_escape_odata_string(VOORTGANG_PROFORMA_DOCUMENT_TYPE);
+    $chunks = [null];
+    if (is_array($workorderNos)) {
+        $unique = [];
+        foreach ($workorderNos as $no) {
+            $no = trim((string) $no);
+            if ($no !== '') {
+                $unique[$no] = $no;
+            }
+        }
+        $chunks = array_chunk(array_values($unique), 40);
+        if ($chunks === []) {
+            return [];
+        }
+    }
+
+    $accumulate = static function (array $row) use (&$map): bool {
+        $workorderNo = voortgang_scalar_string($row['Job_Task_No'] ?? '');
+        if ($workorderNo === '') {
+            return false;
+        }
+
+        $amount = voortgang_scalar_float($row['Line_Amount'] ?? 0);
+        $documentNo = voortgang_scalar_string($row['Document_No'] ?? '');
+        if (!isset($map[$workorderNo])) {
+            $map[$workorderNo] = [
+                'amount' => 0.0,
+                'documents' => [],
+            ];
+        }
+        $map[$workorderNo]['amount'] += $amount;
+        if ($documentNo !== '') {
+            $map[$workorderNo]['documents'][$documentNo] =
+                ($map[$workorderNo]['documents'][$documentNo] ?? 0.0) + $amount;
+        }
+
+        return true;
+    };
+
+    foreach ($chunks as $chunk) {
+        $filter = "Document_Type eq '" . $docType . "' and Job_Task_No ne ''";
+        if (is_array($chunk)) {
+            $woFilter = voortgang_odata_eq_or_filter('Job_Task_No', $chunk);
+            if ($woFilter === '') {
+                continue;
+            }
+            $filter = "Document_Type eq '" . $docType . "' and " . $woFilter;
+        }
+
+        voortgang_paginate_entity(
+            $company,
+            VOORTGANG_PROFORMA_ENTITY,
+            [
+                '$select' => VOORTGANG_PROFORMA_SELECT,
+                '$filter' => $filter,
+            ],
+            $accumulate
+        );
+    }
+
+    return $map;
+}
+
+/**
+ * @param list<string> $workorderNos
+ * @return list<array{no:string,amount:float}>
+ */
+function voortgang_proforma_documents_for_workorders(string $company, array $workorderNos): array
+{
+    $map = voortgang_fetch_proforma_map($company, $workorderNos);
+    $combined = [];
+    foreach ($map as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
+        $documents = is_array($entry['documents'] ?? null) ? $entry['documents'] : [];
+        foreach ($documents as $no => $amount) {
+            $no = voortgang_scalar_string((string) $no);
+            if ($no === '') {
+                continue;
+            }
+            $combined[$no] = ($combined[$no] ?? 0.0) + voortgang_scalar_float($amount);
+        }
+    }
+
+    return voortgang_proforma_documents_from_map($combined);
+}
+
+/**
+ * @param array<string, array{amount?:float, documents?:array<string, float>}> $proformaMap
+ */
+function voortgang_apply_proforma_map_to_rows(array &$rows, array $proformaMap): void
 {
     foreach ($rows as &$row) {
         if (!is_array($row)) {
@@ -577,8 +740,13 @@ function voortgang_apply_proforma_map_to_rows(array &$rows, array $proformaByWo)
                 continue;
             }
             $no = voortgang_scalar_string($item['no'] ?? '');
-            $amount = $no !== '' ? (float) ($proformaByWo[$no] ?? 0.0) : 0.0;
+            $entry = ($no !== '' && isset($proformaMap[$no]) && is_array($proformaMap[$no]))
+                ? $proformaMap[$no]
+                : [];
+            $amount = voortgang_scalar_float($entry['amount'] ?? 0);
+            $documents = is_array($entry['documents'] ?? null) ? $entry['documents'] : [];
             $item['proforma_amount'] = $amount;
+            $item['proformas'] = voortgang_proforma_documents_from_map($documents);
             $total += $amount;
         }
         unset($item);
@@ -627,8 +795,8 @@ function voortgang_refresh_company(string $company): array
     try {
         $rows = [];
         $workorderStats = voortgang_fetch_workorders_into_rows($company, $rows);
-        $proformaByWo = voortgang_fetch_proforma_amounts_by_workorder($company);
-        voortgang_apply_proforma_map_to_rows($rows, $proformaByWo);
+        $proformaMap = voortgang_fetch_proforma_map($company);
+        voortgang_apply_proforma_map_to_rows($rows, $proformaMap);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
         $finalRows = voortgang_finalize_rows($rows);
         $dateBounds = voortgang_workorder_date_bounds_from_rows($finalRows);
@@ -639,6 +807,7 @@ function voortgang_refresh_company(string $company): array
         $meta = [
             'version' => VOORTGANG_CACHE_VERSION,
             'company' => $company,
+            'environment' => (string) (voortgang_bc_auth($company)['environment'] ?? ''),
             'cached_at' => time(),
             'contract_count' => count($finalRows),
             'workorder_count' => (int) ($workorderStats['kept'] ?? 0),
@@ -874,8 +1043,18 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
         return null;
     }
 
-    $proformaByWo = voortgang_fetch_proforma_amounts_by_workorder($company);
-    voortgang_apply_proforma_map_to_rows($rows, $proformaByWo);
+    $workorderNos = [];
+    foreach ($rows[$contractNo]['workorders'] as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $no = voortgang_scalar_string($item['no'] ?? '');
+        if ($no !== '') {
+            $workorderNos[] = $no;
+        }
+    }
+    $proformaMap = voortgang_fetch_proforma_map($company, $workorderNos);
+    voortgang_apply_proforma_map_to_rows($rows, $proformaMap);
 
     voortgang_paginate_entity(
         $company,
@@ -954,6 +1133,10 @@ function voortgang_upsert_contract_row_in_cache(string $company, string $contrac
                 'company' => $company,
                 'cached_at' => time(),
             ];
+        }
+        try {
+            $meta['environment'] = (string) (voortgang_bc_auth($company)['environment'] ?? '');
+        } catch (Throwable $ignored) {
         }
         $bounds = voortgang_workorder_date_bounds_from_rows($next);
         $meta['date_min'] = $bounds['min'];

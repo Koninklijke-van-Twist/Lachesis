@@ -53,6 +53,55 @@ if (!in_array($company, $allowed, true)) {
     ], 400);
 }
 
+$mode = trim((string) ($_GET['mode'] ?? $_POST['mode'] ?? 'refresh'));
+if ($mode === 'proforma') {
+    $requested = trim((string) ($_GET['workorders'] ?? $_POST['workorders'] ?? ''));
+    $workorderNos = [];
+    if ($requested !== '') {
+        foreach (explode(',', $requested) as $no) {
+            $no = trim($no);
+            if ($no !== '') {
+                $workorderNos[] = $no;
+            }
+        }
+    }
+    if ($workorderNos === []) {
+        $cache = voortgang_read_company_cache($company);
+        $rows = is_array($cache['rows'] ?? null) ? $cache['rows'] : [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || voortgang_scalar_string($row['contract_no'] ?? '') !== $contractNo) {
+                continue;
+            }
+            $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+            foreach ($items as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $no = voortgang_scalar_string($item['no'] ?? '');
+                if ($no !== '') {
+                    $workorderNos[] = $no;
+                }
+            }
+            break;
+        }
+    }
+
+    try {
+        $items = voortgang_proforma_documents_for_workorders($company, $workorderNos);
+        voortgang_refresh_send_json([
+            'ok' => true,
+            'contract_no' => $contractNo,
+            'items' => $items,
+        ]);
+    } catch (Throwable $error) {
+        voortgang_refresh_send_json([
+            'ok' => false,
+            'contract_no' => $contractNo,
+            'error' => $error->getMessage(),
+        ], 500);
+    }
+}
+
 try {
     $result = voortgang_refresh_contract($company, $contractNo);
     voortgang_refresh_send_json($result, !empty($result['ok']) ? 200 : 502);

@@ -246,6 +246,20 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
     . '&date_from=' . rawurlencode($dateFrom)
     . '&date_to=' . rawurlencode($dateTo);
 
+$bcWebClient = [
+    'base' => '',
+    'company' => $company,
+    'workorder_page' => VOORTGANG_BC_PAGE_WORKORDER,
+    'invoice_page' => VOORTGANG_BC_PAGE_SALES_INVOICE,
+];
+if ($company !== '' && !$needsCompanyChoice) {
+    $environment = trim((string) (is_array($cache) ? ($cache['_meta']['environment'] ?? '') : ''));
+    if ($environment === '') {
+        $environment = auth_get_primary_environment();
+    }
+    $bcWebClient['base'] = voortgang_bc_webclient_base_from_environment($environment);
+}
+
 ?><!DOCTYPE html>
 <html lang="<?= voortgang_h(getHtmlLang()) ?>">
 <head>
@@ -494,6 +508,8 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         .voortgang-instructions { max-width: 220px; white-space: pre-wrap; overflow-wrap: anywhere; }
         .voortgang-count { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
         .voortgang-proforma { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; font-variant-numeric: tabular-nums; }
+        .voortgang-bc-link { font: inherit; font-weight: 700; color: var(--kvt-main-blue); text-decoration: underline; }
+        .voortgang-bc-link:hover { color: var(--kvt-text); }
         .voortgang-row-hidden { display: none; }
         .voortgang-pager { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
         .voortgang-pager-top { margin: 0 0 14px; }
@@ -859,7 +875,9 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         'empty' => LOC('voortgang.modal.empty'),
         'proforma_title' => LOC('voortgang.modal.proforma_title'),
         'proforma_empty' => LOC('voortgang.modal.proforma_empty'),
+        'proforma_no' => LOC('voortgang.col.proforma_no'),
         'proforma_amount' => LOC('voortgang.col.proforma_amount'),
+        'modal_loading' => LOC('voortgang.modal.loading'),
         'total' => LOC('voortgang.col.total'),
         'filter_all' => LOC('voortgang.filter.all'),
         'filter_completed' => LOC('voortgang.filter.completed'),
@@ -870,6 +888,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
     ], JSON_UNESCAPED_UNICODE) ?>;
     var companyName = <?= json_encode($company, JSON_UNESCAPED_UNICODE) ?>;
     var statusList = <?= json_encode(array_values(VOORTGANG_STATUSES), JSON_UNESCAPED_UNICODE) ?>;
+    var bcWeb = <?= json_encode($bcWebClient, JSON_UNESCAPED_UNICODE) ?>;
 
     function escapeHtml(value) {
         return String(value)
@@ -877,6 +896,33 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;');
+    }
+
+    function bcRecordUrl(pageId, recordNo) {
+        var base = bcWeb && bcWeb.base ? String(bcWeb.base) : '';
+        var no = String(recordNo || '');
+        var page = Number(pageId || 0);
+        if (!base || !no || !page) {
+            return '';
+        }
+        var filter = "'No.' IS '" + no.replace(/'/g, "''") + "'";
+        return base
+            + '?company=' + encodeURIComponent(bcWeb.company || '')
+            + '&page=' + encodeURIComponent(String(page))
+            + '&filter=' + encodeURIComponent(filter);
+    }
+
+    function bcLinkHtml(pageId, recordNo) {
+        var no = String(recordNo || '');
+        if (!no) {
+            return '';
+        }
+        var url = bcRecordUrl(pageId, no);
+        if (!url) {
+            return escapeHtml(no);
+        }
+        return '<a class="voortgang-bc-link" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">'
+            + escapeHtml(no) + '</a>';
     }
 
     function formatMoneyJs(value) {
@@ -991,7 +1037,8 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
                 status: String(item.status || ''),
                 task_code: taskCode,
                 start_date: startDate,
-                proforma_amount: Number(item.proforma_amount || 0)
+                proforma_amount: Number(item.proforma_amount || 0),
+                proformas: Array.isArray(item.proformas) ? item.proformas : []
             });
         });
         return out;
@@ -1514,13 +1561,23 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
     function proformaItemsFor(contractNo) {
         var entry = contractData[contractNo] || {};
         var filtered = filterItems(entry.items || []);
-        var items = [];
+        var byNo = {};
         filtered.forEach(function (item) {
-            var amount = Number(item.proforma_amount || 0);
-            if (!isFinite(amount) || amount <= 0) {
-                return;
-            }
-            items.push({ no: item.no || '', amount: amount });
+            var docs = Array.isArray(item.proformas) ? item.proformas : [];
+            docs.forEach(function (doc) {
+                if (!doc) {
+                    return;
+                }
+                var no = String(doc.no || '');
+                var amount = Number(doc.amount || 0);
+                if (!no || !isFinite(amount) || amount <= 0) {
+                    return;
+                }
+                byNo[no] = (byNo[no] || 0) + amount;
+            });
+        });
+        var items = Object.keys(byNo).map(function (no) {
+            return { no: no, amount: byNo[no] };
         });
         items.sort(function (a, b) {
             return String(a.no).localeCompare(String(b.no), undefined, { numeric: true, sensitivity: 'base' });
@@ -1528,29 +1585,95 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
         return items;
     }
 
+    function hasCachedProformaAmount(contractNo) {
+        var filtered = filterItems((contractData[contractNo] || {}).items || []);
+        return filtered.some(function (item) {
+            var amount = Number(item.proforma_amount || 0);
+            return isFinite(amount) && amount > 0;
+        });
+    }
+
+    function renderProformaTable(contractNo, items, loading) {
+        if (!modalBody) {
+            return;
+        }
+        if (modalTitle) {
+            modalTitle.textContent = labels.proforma_title + ' · ' + contractNo;
+        }
+        if (loading) {
+            modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.modal_loading || '…') + '</p>';
+            return;
+        }
+        if (!items || items.length === 0) {
+            modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.proforma_empty) + '</p>';
+            return;
+        }
+        var html = '<table class="voortgang-modal-table"><thead><tr>';
+        html += '<th>' + escapeHtml(labels.proforma_no || labels.workorder_no) + '</th>';
+        html += '<th class="num">' + escapeHtml(labels.proforma_amount) + '</th>';
+        html += '</tr></thead><tbody>';
+        items.forEach(function (item) {
+            html += '<tr><td>' + bcLinkHtml(bcWeb.invoice_page, item.no) + '</td><td class="num">'
+                + escapeHtml(formatMoneyJs(item.amount)) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        modalBody.innerHTML = html;
+    }
+
+    function fetchProformaDocs(contractNo) {
+        var filtered = filterItems((contractData[contractNo] || {}).items || []);
+        var nos = [];
+        filtered.forEach(function (item) {
+            if (item && item.no && Number(item.proforma_amount || 0) > 0) {
+                nos.push(item.no);
+            }
+        });
+        var url = 'refresh_contract.php?mode=proforma&company=' + encodeURIComponent(companyName)
+            + '&contract=' + encodeURIComponent(contractNo)
+            + '&_t=' + Date.now();
+        if (nos.length) {
+            url += '&workorders=' + encodeURIComponent(nos.join(','));
+        }
+        return fetch(url, {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        }).then(function (response) {
+            return response.text().then(function (text) {
+                var data = null;
+                try {
+                    data = text ? JSON.parse(text) : null;
+                } catch (e) {
+                    data = null;
+                }
+                return { okHttp: response.ok, data: data };
+            });
+        }).then(function (result) {
+            var data = result.data || {};
+            if (!data.ok || !Array.isArray(data.items)) {
+                return [];
+            }
+            return data.items;
+        });
+    }
+
     function openProforma(contractNo) {
         if (!modalBody || !backdrop) {
             return;
         }
         var items = proformaItemsFor(contractNo);
-        if (modalTitle) {
-            modalTitle.textContent = labels.proforma_title + ' · ' + contractNo;
-        }
-        if (items.length === 0) {
-            modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.proforma_empty) + '</p>';
-        } else {
-            var html = '<table class="voortgang-modal-table"><thead><tr>';
-            html += '<th>' + escapeHtml(labels.workorder_no) + '</th>';
-            html += '<th class="num">' + escapeHtml(labels.proforma_amount) + '</th>';
-            html += '</tr></thead><tbody>';
-            items.forEach(function (item) {
-                html += '<tr><td>' + escapeHtml(item.no) + '</td><td class="num">' + escapeHtml(formatMoneyJs(item.amount)) + '</td></tr>';
-            });
-            html += '</tbody></table>';
-            modalBody.innerHTML = html;
-        }
+        var needsFetch = items.length === 0 && hasCachedProformaAmount(contractNo) && !!companyName;
+        renderProformaTable(contractNo, items, needsFetch);
         backdrop.classList.add('is-open');
         backdrop.setAttribute('aria-hidden', 'false');
+        if (!needsFetch) {
+            return;
+        }
+        fetchProformaDocs(contractNo).then(function (docs) {
+            renderProformaTable(contractNo, docs, false);
+        }).catch(function () {
+            renderProformaTable(contractNo, [], false);
+        });
     }
 
     function openWorkorders(contractNo, status) {
@@ -1570,7 +1693,7 @@ $excelUrl = 'index.php?export=excel&company=' . rawurlencode($company)
             html += '<th>' + escapeHtml(labels.status) + '</th>';
             html += '</tr></thead><tbody>';
             items.forEach(function (item) {
-                html += '<tr><td>' + escapeHtml(item.no) + '</td><td>' + escapeHtml(item.status) + '</td></tr>';
+                html += '<tr><td>' + bcLinkHtml(bcWeb.workorder_page, item.no) + '</td><td>' + escapeHtml(item.status) + '</td></tr>';
             });
             html += '</tbody></table>';
             modalBody.innerHTML = html;

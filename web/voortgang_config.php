@@ -20,8 +20,12 @@ const VOORTGANG_PROFORMA_ENTITY = 'SalesInvoiceSubform';
 
 const VOORTGANG_WORKORDERS_SELECT = 'No,Contract_No,Status,Task_Code,Start_Date';
 const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,Invoice_Period,KVT_Memo_Internal_Use_Only,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
-const VOORTGANG_PROFORMA_SELECT = 'Job_Task_No,Line_Amount,Document_Type';
+const VOORTGANG_PROFORMA_SELECT = 'Job_Task_No,Line_Amount,Document_Type,Document_No';
 const VOORTGANG_PROFORMA_DOCUMENT_TYPE = 'Factuur';
+
+/** BC webclient-pagina's voor deep links. 88 = Projectkaart (werkorder-nr = projectnr), 43 = Verkoopfactuur. */
+const VOORTGANG_BC_PAGE_WORKORDER = 88;
+const VOORTGANG_BC_PAGE_SALES_INVOICE = 43;
 
 /** Kolomvolgorde van status-totalen. */
 const VOORTGANG_STATUSES = [
