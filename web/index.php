@@ -77,6 +77,17 @@ function voortgang_proforma_cell(float $amount): string
         . voortgang_h(voortgang_format_money($amount)) . '</button></td>';
 }
 
+function voortgang_instructions_html(string $text): string
+{
+    return str_replace(["\r\n", "\n", "\r"], '<br/>', voortgang_h($text));
+}
+
+function voortgang_instructions_cell(string $text): string
+{
+    return '<td class="voortgang-instructions"><button type="button" class="voortgang-instructions-btn">'
+        . voortgang_instructions_html(voortgang_truncate_instruction_preview($text)) . '</button></td>';
+}
+
 /**
  * Page load
  */
@@ -560,7 +571,10 @@ if ($company !== '' && !$needsCompanyChoice) {
             to { transform: translateY(-50%) rotate(360deg); }
         }
         table.voortgang-table tbody tr.is-refreshing td { background: #f0f9ff; }
-        .voortgang-instructions { max-width: 220px; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .voortgang-instructions { max-width: 220px; }
+        .voortgang-instructions-btn { font: inherit; color: inherit; background: transparent; border: 0; padding: 4px 6px; margin: -4px -6px; cursor: pointer; text-align: left; overflow-wrap: anywhere; width: 100%; min-height: 1.4em; border-radius: 8px; }
+        .voortgang-instructions-btn:hover { background: #e0f2fe; }
+        .voortgang-instructions-full { margin: 0; overflow-wrap: anywhere; }
         .voortgang-count { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
         .voortgang-proforma { font: inherit; font-weight: 700; color: var(--kvt-main-blue); background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; font-variant-numeric: tabular-nums; }
         .voortgang-bc-link { font: inherit; font-weight: 700; color: var(--kvt-main-blue); text-decoration: underline; }
@@ -812,7 +826,7 @@ if ($company !== '' && !$needsCompanyChoice) {
                                 <td class="num"><?= voortgang_h(voortgang_format_money($revenue)) ?></td>
                                 <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_cost'] ?? 0))) ?></td>
                                 <?= voortgang_proforma_cell((float) ($agg['proforma_total'] ?? 0)) ?>
-                                <td class="voortgang-instructions"><?= voortgang_h((string) ($rawRow['instructions'] ?? '')) ?></td>
+                                <?= voortgang_instructions_cell((string) ($rawRow['instructions'] ?? '')) ?>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -972,6 +986,9 @@ if ($company !== '' && !$needsCompanyChoice) {
         'proforma_this_progress' => LOC('voortgang.proforma.this_progress'),
         'proforma_other_progress' => LOC('voortgang.proforma.other_progress'),
         'proforma_lines_title' => LOC('voortgang.modal.proforma_lines_title'),
+        'instructions_title' => LOC('voortgang.modal.instructions_title'),
+        'instructions_empty' => LOC('voortgang.modal.instructions_empty'),
+        'instructions' => LOC('voortgang.col.instructions'),
         'contract_no' => LOC('voortgang.col.contract_no'),
         'modal_loading' => LOC('voortgang.modal.loading'),
         'total' => LOC('voortgang.col.total'),
@@ -985,6 +1002,7 @@ if ($company !== '' && !$needsCompanyChoice) {
     var companyName = <?= json_encode($company, JSON_UNESCAPED_UNICODE) ?>;
     var statusList = <?= json_encode(array_values(VOORTGANG_STATUSES), JSON_UNESCAPED_UNICODE) ?>;
     var bcWeb = <?= json_encode($bcWebClient, JSON_UNESCAPED_UNICODE) ?>;
+    var instructionPreviewLines = <?= (int) VOORTGANG_INSTRUCTION_PREVIEW_LINES ?>;
 
     function escapeHtml(value) {
         return String(value)
@@ -1067,6 +1085,28 @@ if ($company !== '' && !$needsCompanyChoice) {
         }
         return '<td class="num"><button type="button" class="voortgang-proforma">'
             + escapeHtml(formatMoneyJs(value)) + '</button></td>';
+    }
+
+    function truncateInstructionPreview(text) {
+        var value = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        if (!value) {
+            return '';
+        }
+        var lines = value.split('\n');
+        var maxLines = instructionPreviewLines > 0 ? instructionPreviewLines : 3;
+        if (lines.length <= maxLines) {
+            return value;
+        }
+        return lines.slice(0, maxLines).join('\n') + '...';
+    }
+
+    function instructionsHtml(text) {
+        return escapeHtml(text).replace(/\r\n|\n|\r/g, '<br/>');
+    }
+
+    function instructionsCellHtml(text) {
+        return '<td class="voortgang-instructions"><button type="button" class="voortgang-instructions-btn">'
+            + instructionsHtml(truncateInstructionPreview(text)) + '</button></td>';
     }
 
     function rowSearchText(row) {
@@ -1219,7 +1259,7 @@ if ($company !== '' && !$needsCompanyChoice) {
         html += '<td class="num">' + escapeHtml(formatMoneyJs(revenue)) + '</td>';
         html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_cost || 0)) + '</td>';
         html += proformaCellHtml(agg.proforma_total || 0);
-        html += '<td class="voortgang-instructions">' + escapeHtml(data.instructions || '') + '</td>';
+        html += instructionsCellHtml(data.instructions || '');
         tr.innerHTML = html;
     }
 
@@ -2060,6 +2100,31 @@ if ($company !== '' && !$needsCompanyChoice) {
         backdrop.setAttribute('aria-hidden', 'false');
     }
 
+    function openInstructions(contractNo) {
+        if (!modalBody || !backdrop) {
+            return;
+        }
+        var entry = contractData[contractNo] || {};
+        var text = String(entry.instructions || '');
+        var title = (labels.instructions_title || labels.instructions || '') + (contractNo ? ' · ' + contractNo : '');
+        if (modalTitle) {
+            modalTitle.textContent = title;
+        }
+        if (text === '') {
+            setModalExport('main', null);
+            modalBody.innerHTML = '<p class="voortgang-muted">' + escapeHtml(labels.instructions_empty || labels.empty) + '</p>';
+        } else {
+            setModalExport('main', {
+                title: title,
+                headers: [labels.instructions || labels.instructions_title || ''],
+                rows: [[text]]
+            });
+            modalBody.innerHTML = '<p class="voortgang-instructions-full">' + instructionsHtml(text) + '</p>';
+        }
+        backdrop.classList.add('is-open');
+        backdrop.setAttribute('aria-hidden', 'false');
+    }
+
     if (searchFilter) {
         searchFilter.addEventListener('input', function () { applyFilters(true); });
         searchFilter.addEventListener('change', function () { applyFilters(true); });
@@ -2153,6 +2218,17 @@ if ($company !== '' && !$needsCompanyChoice) {
                 var proformaRow = proformaButton.closest('tr');
                 if (proformaRow) {
                     openProforma(proformaRow.getAttribute('data-contract') || '');
+                }
+                return;
+            }
+
+            var instructionsButton = event.target.closest('.voortgang-instructions-btn');
+            if (instructionsButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                var instructionsRow = instructionsButton.closest('tr');
+                if (instructionsRow) {
+                    openInstructions(instructionsRow.getAttribute('data-contract') || '');
                 }
                 return;
             }

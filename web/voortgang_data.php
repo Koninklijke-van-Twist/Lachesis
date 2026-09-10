@@ -54,6 +54,57 @@ function voortgang_scalar_string(mixed $value): string
     return '';
 }
 
+function voortgang_normalize_memo_text(mixed $value): string
+{
+    $text = voortgang_scalar_string($value);
+    if ($text === '') {
+        return '';
+    }
+
+    return trim(str_replace(["\r\n", "\r"], "\n", $text));
+}
+
+/**
+ * @param list<mixed> $parts
+ */
+function voortgang_combine_instruction_texts(array $parts): string
+{
+    $kept = [];
+    foreach ($parts as $part) {
+        $text = voortgang_normalize_memo_text($part);
+        if ($text !== '') {
+            $kept[] = $text;
+        }
+    }
+
+    return implode("\n\n", $kept);
+}
+
+function voortgang_instructions_from_contract_row(array $row): string
+{
+    $parts = [];
+    foreach (VOORTGANG_CONTRACT_MEMO_FIELDS as $field) {
+        $parts[] = $row[$field] ?? '';
+    }
+
+    return voortgang_combine_instruction_texts($parts);
+}
+
+function voortgang_truncate_instruction_preview(string $text, int $maxLines = VOORTGANG_INSTRUCTION_PREVIEW_LINES): string
+{
+    $text = str_replace(["\r\n", "\r"], "\n", $text);
+    if ($text === '') {
+        return '';
+    }
+
+    $lines = explode("\n", $text);
+    if (count($lines) <= $maxLines) {
+        return $text;
+    }
+
+    return implode("\n", array_slice($lines, 0, $maxLines)) . '...';
+}
+
 function voortgang_scalar_float(mixed $value): float
 {
     if (is_int($value) || is_float($value)) {
@@ -569,7 +620,7 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
 
             $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
             $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
-            $rows[$contractNo]['instructions'] = voortgang_scalar_string($row['KVT_Memo_Internal_Use_Only'] ?? '');
+            $rows[$contractNo]['instructions'] = voortgang_instructions_from_contract_row($row);
             $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
             // BC levert KVT_Total_Revenue negatief; toon/sla op als positief gefactureerd bedrag.
             $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
@@ -1383,7 +1434,7 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
 
             $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
             $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
-            $rows[$contractNo]['instructions'] = voortgang_scalar_string($row['KVT_Memo_Internal_Use_Only'] ?? '');
+            $rows[$contractNo]['instructions'] = voortgang_instructions_from_contract_row($row);
             $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
             $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
             $rows[$contractNo]['total_cost'] = voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0);
