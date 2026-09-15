@@ -1,7 +1,8 @@
 <?php
 
 /**
- * Minimal .xlsx writer with an Excel table (headers + autofilter).
+ * Minimal .xlsx writer with Excel tables (headers + autofilter).
+ * Supports one or more worksheets in the same workbook.
  */
 
 function voortgang_xlsx_column_letter(int $columnNumber): string
@@ -101,6 +102,91 @@ function voortgang_xlsx_export_row(array $row): array
     return $values;
 }
 
+function voortgang_xlsx_workorder_headers(): array
+{
+    return [
+        LOC('voortgang.col.contract_no'),
+        LOC('voortgang.col.workorder_no'),
+        LOC('voortgang.col.task_code'),
+        LOC('voortgang.col.status'),
+        LOC('voortgang.col.start_date'),
+        LOC('voortgang.col.proforma_amount'),
+        LOC('voortgang.col.proformas'),
+    ];
+}
+
+function voortgang_xlsx_format_proformas(mixed $proformas): string
+{
+    if (!is_array($proformas)) {
+        return '';
+    }
+
+    $parts = [];
+    foreach ($proformas as $doc) {
+        if (!is_array($doc)) {
+            continue;
+        }
+        $no = trim((string) ($doc['no'] ?? ''));
+        if ($no === '') {
+            continue;
+        }
+        $amount = round((float) ($doc['amount'] ?? 0), 2);
+        $parts[] = $no . ' (' . rtrim(rtrim(sprintf('%.2F', $amount), '0'), '.') . ')';
+    }
+
+    return implode('; ', $parts);
+}
+
+function voortgang_xlsx_workorder_export_row(string $contractNo, array $item): array
+{
+    return [
+        $contractNo,
+        (string) ($item['no'] ?? ''),
+        (string) ($item['task_code'] ?? ''),
+        (string) ($item['status'] ?? ''),
+        (string) ($item['start_date'] ?? ''),
+        round((float) ($item['proforma_amount'] ?? 0), 2),
+        voortgang_xlsx_format_proformas($item['proformas'] ?? []),
+    ];
+}
+
+/**
+ * @param list<array<string, mixed>> $rows
+ * @return list<list<string|int|float>>
+ */
+function voortgang_xlsx_workorder_export_rows(array $rows): array
+{
+    $values = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contractNo = (string) ($row['contract_no'] ?? '');
+        $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $exported = voortgang_xlsx_workorder_export_row($contractNo, $item);
+            if (trim((string) ($exported[1] ?? '')) === '') {
+                continue;
+            }
+            $values[] = $exported;
+        }
+    }
+
+    usort($values, static function (array $a, array $b): int {
+        $contract = strnatcasecmp((string) ($a[0] ?? ''), (string) ($b[0] ?? ''));
+        if ($contract !== 0) {
+            return $contract;
+        }
+
+        return strnatcasecmp((string) ($a[1] ?? ''), (string) ($b[1] ?? ''));
+    });
+
+    return $values;
+}
+
 function voortgang_xlsx_table_name(string $name): string
 {
     $name = (string) preg_replace('/[^A-Za-z0-9_]/', '', voortgang_xlsx_sanitize_text($name));
@@ -121,19 +207,36 @@ function voortgang_xlsx_sheet_name(string $name): string
     return mb_substr($name, 0, 31);
 }
 
+function voortgang_xlsx_unique_name(string $name, array &$used, int $maxLength, callable $sanitize): string
+{
+    $base = $sanitize($name);
+    $candidate = $base;
+    $suffix = 2;
+    while (isset($used[mb_strtolower($candidate)])) {
+        $extra = '_' . (string) $suffix;
+        $cut = max(1, $maxLength - strlen($extra));
+        $candidate = mb_substr($base, 0, $cut) . $extra;
+        $suffix++;
+    }
+    $used[mb_strtolower($candidate)] = true;
+
+    return $candidate;
+}
+
 /**
  * @param list<string> $headers
  * @param list<list<string|int|float>> $rows
+ * @return array{sheetXml:string,tableXml:string,sheetRels:string}
  */
-function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetName, string $tableName): string
+function voortgang_xlsx_sheet_parts(array $headers, array $rows, string $tableName, int $tableId): array
 {
     $headers = array_values($headers);
     if ($headers === []) {
         $headers = [''];
     }
     $colCount = count($headers);
-    $sheetName = voortgang_xlsx_sheet_name($sheetName);
     $tableName = voortgang_xlsx_table_name($tableName);
+    $tableId = max(1, $tableId);
 
     $sheetRows = '<row r="1">';
     foreach ($headers as $index => $header) {
@@ -192,7 +295,7 @@ function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetNa
 
     $tableXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-        . ' id="1" name="' . $tableName . '" displayName="' . $tableName . '" ref="' . $tableRef . '" totalsRowShown="0">'
+        . ' id="' . (string) $tableId . '" name="' . $tableName . '" displayName="' . $tableName . '" ref="' . $tableRef . '" totalsRowShown="0">'
         . '<autoFilter ref="' . $tableRef . '"/>'
         . '<tableColumns count="' . (string) $colCount . '">' . $columnsXml . '</tableColumns>'
         . '<tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>'
@@ -200,18 +303,102 @@ function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetNa
 
     $sheetRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>'
+        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table'
+        . (string) $tableId . '.xml"/>'
         . '</Relationships>';
+
+    return [
+        'sheetXml' => $sheetXml,
+        'tableXml' => $tableXml,
+        'sheetRels' => $sheetRels,
+    ];
+}
+
+/**
+ * @param list<array{headers?:list<string>,rows?:list<list<string|int|float>>,sheetName?:string,tableName?:string}> $sheets
+ */
+function voortgang_build_workbook_xlsx(array $sheets): string
+{
+    $normalized = [];
+    $usedSheetNames = [];
+    $usedTableNames = [];
+    foreach ($sheets as $sheet) {
+        if (!is_array($sheet)) {
+            continue;
+        }
+        $headers = is_array($sheet['headers'] ?? null) ? array_values($sheet['headers']) : [''];
+        if ($headers === []) {
+            $headers = [''];
+        }
+        $rows = [];
+        foreach (is_array($sheet['rows'] ?? null) ? $sheet['rows'] : [] as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+        $sheetIndex = count($normalized) + 1;
+        $normalized[] = [
+            'headers' => $headers,
+            'rows' => $rows,
+            'sheetName' => voortgang_xlsx_unique_name(
+                (string) ($sheet['sheetName'] ?? ('Export' . (string) $sheetIndex)),
+                $usedSheetNames,
+                31,
+                'voortgang_xlsx_sheet_name'
+            ),
+            'tableName' => voortgang_xlsx_unique_name(
+                (string) ($sheet['tableName'] ?? ('Tabel' . (string) $sheetIndex)),
+                $usedTableNames,
+                60,
+                'voortgang_xlsx_table_name'
+            ),
+        ];
+    }
+
+    if ($normalized === []) {
+        $normalized[] = [
+            'headers' => [''],
+            'rows' => [],
+            'sheetName' => 'Export',
+            'tableName' => 'Tabel',
+        ];
+    }
+
+    $sheetEntries = '';
+    $workbookRelsEntries = '';
+    $contentOverrides = ''
+        . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>';
+    $parts = [];
+    foreach ($normalized as $index => $sheet) {
+        $sheetId = $index + 1;
+        $rId = 'rId' . (string) $sheetId;
+        $built = voortgang_xlsx_sheet_parts($sheet['headers'], $sheet['rows'], $sheet['tableName'], $sheetId);
+        $parts[] = [
+            'sheetId' => $sheetId,
+            'sheetXml' => $built['sheetXml'],
+            'tableXml' => $built['tableXml'],
+            'sheetRels' => $built['sheetRels'],
+        ];
+        $sheetEntries .= '<sheet name="' . voortgang_xlsx_xml_escape($sheet['sheetName'])
+            . '" sheetId="' . (string) $sheetId . '" r:id="' . $rId . '"/>';
+        $workbookRelsEntries .= '<Relationship Id="' . $rId
+            . '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'
+            . (string) $sheetId . '.xml"/>';
+        $contentOverrides .= '<Override PartName="/xl/worksheets/sheet' . (string) $sheetId
+            . '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+        $contentOverrides .= '<Override PartName="/xl/tables/table' . (string) $sheetId
+            . '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>';
+    }
 
     $workbookXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
         . ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        . '<sheets><sheet name="' . voortgang_xlsx_xml_escape($sheetName) . '" sheetId="1" r:id="rId1"/></sheets>'
+        . '<sheets>' . $sheetEntries . '</sheets>'
         . '</workbook>';
 
     $workbookRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        . $workbookRelsEntries
         . '</Relationships>';
 
     $rootRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -223,9 +410,7 @@ function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetNa
         . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
         . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
         . '<Default Extension="xml" ContentType="application/xml"/>'
-        . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-        . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-        . '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>'
+        . $contentOverrides
         . '</Types>';
 
     if (!class_exists('ZipArchive')) {
@@ -249,9 +434,12 @@ function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetNa
     $zip->addFromString('_rels/.rels', $rootRels);
     $zip->addFromString('xl/workbook.xml', $workbookXml);
     $zip->addFromString('xl/_rels/workbook.xml.rels', $workbookRels);
-    $zip->addFromString('xl/worksheets/sheet1.xml', $sheetXml);
-    $zip->addFromString('xl/worksheets/_rels/sheet1.xml.rels', $sheetRels);
-    $zip->addFromString('xl/tables/table1.xml', $tableXml);
+    foreach ($parts as $part) {
+        $sheetId = (string) $part['sheetId'];
+        $zip->addFromString('xl/worksheets/sheet' . $sheetId . '.xml', $part['sheetXml']);
+        $zip->addFromString('xl/worksheets/_rels/sheet' . $sheetId . '.xml.rels', $part['sheetRels']);
+        $zip->addFromString('xl/tables/table' . $sheetId . '.xml', $part['tableXml']);
+    }
     $zip->close();
 
     $binary = file_get_contents($zipPath);
@@ -263,6 +451,22 @@ function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetNa
     return $binary;
 }
 
+/**
+ * @param list<string> $headers
+ * @param list<list<string|int|float>> $rows
+ */
+function voortgang_build_table_xlsx(array $headers, array $rows, string $sheetName, string $tableName): string
+{
+    return voortgang_build_workbook_xlsx([
+        [
+            'headers' => $headers,
+            'rows' => $rows,
+            'sheetName' => $sheetName,
+            'tableName' => $tableName,
+        ],
+    ]);
+}
+
 function voortgang_build_excel_xlsx(array $rows): string
 {
     $values = [];
@@ -272,10 +476,18 @@ function voortgang_build_excel_xlsx(array $rows): string
         }
     }
 
-    return voortgang_build_table_xlsx(
-        voortgang_xlsx_headers(),
-        $values,
-        'Contractvoortgang',
-        'ContractVoortgang'
-    );
+    return voortgang_build_workbook_xlsx([
+        [
+            'headers' => voortgang_xlsx_headers(),
+            'rows' => $values,
+            'sheetName' => 'Contractvoortgang',
+            'tableName' => 'ContractVoortgang',
+        ],
+        [
+            'headers' => voortgang_xlsx_workorder_headers(),
+            'rows' => voortgang_xlsx_workorder_export_rows($rows),
+            'sheetName' => LOC('voortgang.sheet.workorders'),
+            'tableName' => 'Werkorderregels',
+        ],
+    ]);
 }
