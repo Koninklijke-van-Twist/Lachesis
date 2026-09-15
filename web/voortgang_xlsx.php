@@ -105,10 +105,13 @@ function voortgang_xlsx_export_row(array $row): array
 function voortgang_xlsx_workorder_headers(): array
 {
     return [
+        LOC('voortgang.col.project_no'),
         LOC('voortgang.col.contract_no'),
-        LOC('voortgang.col.workorder_no'),
+        LOC('voortgang.col.workorder_nr'),
         LOC('voortgang.col.task_code'),
-        LOC('voortgang.col.status'),
+        LOC('voortgang.col.task_description'),
+        LOC('voortgang.col.workorder_status'),
+        LOC('voortgang.col.linked_project_status'),
         LOC('voortgang.col.start_date'),
         LOC('voortgang.col.proforma_amount'),
         LOC('voortgang.col.proformas'),
@@ -140,10 +143,13 @@ function voortgang_xlsx_format_proformas(mixed $proformas): string
 function voortgang_xlsx_workorder_export_row(string $contractNo, array $item): array
 {
     return [
+        (string) ($item['project_no'] ?? ''),
         $contractNo,
         (string) ($item['no'] ?? ''),
         (string) ($item['task_code'] ?? ''),
+        (string) ($item['task_description'] ?? ''),
         (string) ($item['status'] ?? ''),
+        (string) ($item['project_status'] ?? ''),
         (string) ($item['start_date'] ?? ''),
         round((float) ($item['proforma_amount'] ?? 0), 2),
         voortgang_xlsx_format_proformas($item['proformas'] ?? []),
@@ -168,7 +174,7 @@ function voortgang_xlsx_workorder_export_rows(array $rows): array
                 continue;
             }
             $exported = voortgang_xlsx_workorder_export_row($contractNo, $item);
-            if (trim((string) ($exported[1] ?? '')) === '') {
+            if (trim((string) ($exported[2] ?? '')) === '') {
                 continue;
             }
             $values[] = $exported;
@@ -176,12 +182,21 @@ function voortgang_xlsx_workorder_export_rows(array $rows): array
     }
 
     usort($values, static function (array $a, array $b): int {
-        $contract = strnatcasecmp((string) ($a[0] ?? ''), (string) ($b[0] ?? ''));
-        if ($contract !== 0) {
-            return $contract;
+        $projectA = (string) ($a[0] ?? '');
+        $projectB = (string) ($b[0] ?? '');
+        if ($projectA === '' && $projectB !== '') {
+            return 1;
+        }
+        if ($projectB === '' && $projectA !== '') {
+            return -1;
         }
 
-        return strnatcasecmp((string) ($a[1] ?? ''), (string) ($b[1] ?? ''));
+        $project = strnatcasecmp($projectA, $projectB);
+        if ($project !== 0) {
+            return $project;
+        }
+
+        return strnatcasecmp((string) ($a[2] ?? ''), (string) ($b[2] ?? ''));
     });
 
     return $values;

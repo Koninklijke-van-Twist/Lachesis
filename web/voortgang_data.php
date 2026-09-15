@@ -154,8 +154,46 @@ function voortgang_empty_counts(): array
 }
 
 /**
+ * @return array{
+ *   no:string,
+ *   status:string,
+ *   task_code:string,
+ *   task_description:string,
+ *   project_no:string,
+ *   project_status:string,
+ *   start_date:string,
+ *   proforma_amount:float,
+ *   proformas:list<array{no:string,amount:float}>
+ * }
+ */
+function voortgang_normalize_workorder_item(array $item): array
+{
+    return [
+        'no' => voortgang_scalar_string($item['no'] ?? ''),
+        'status' => voortgang_scalar_string($item['status'] ?? ''),
+        'task_code' => voortgang_scalar_string($item['task_code'] ?? ''),
+        'task_description' => voortgang_scalar_string($item['task_description'] ?? ''),
+        'project_no' => voortgang_scalar_string($item['project_no'] ?? ''),
+        'project_status' => voortgang_scalar_string($item['project_status'] ?? ''),
+        'start_date' => voortgang_parse_odata_date($item['start_date'] ?? ''),
+        'proforma_amount' => voortgang_scalar_float($item['proforma_amount'] ?? 0),
+        'proformas' => voortgang_normalize_proforma_documents($item['proformas'] ?? []),
+    ];
+}
+
+/**
  * @param list<array<string, mixed>> $items
- * @return list<array{no:string,status:string,task_code:string,start_date:string,proforma_amount:float,proformas:list<array{no:string,amount:float}>}>
+ * @return list<array{
+ *   no:string,
+ *   status:string,
+ *   task_code:string,
+ *   task_description:string,
+ *   project_no:string,
+ *   project_status:string,
+ *   start_date:string,
+ *   proforma_amount:float,
+ *   proformas:list<array{no:string,amount:float}>
+ * }>
  */
 function voortgang_filter_workorder_items(array $items, bool $hidePd, string $dateFrom, string $dateTo): array
 {
@@ -168,12 +206,12 @@ function voortgang_filter_workorder_items(array $items, bool $hidePd, string $da
             continue;
         }
 
-        $taskCode = voortgang_scalar_string($item['task_code'] ?? '');
-        if ($hidePd && strcasecmp($taskCode, VOORTGANG_HIDDEN_TASK_CODE_PD) === 0) {
+        $normalized = voortgang_normalize_workorder_item($item);
+        if ($hidePd && strcasecmp($normalized['task_code'], VOORTGANG_HIDDEN_TASK_CODE_PD) === 0) {
             continue;
         }
 
-        $startDate = voortgang_parse_odata_date($item['start_date'] ?? '');
+        $startDate = $normalized['start_date'];
         if ($startDate !== '') {
             if ($dateFrom !== '' && $startDate < $dateFrom) {
                 continue;
@@ -183,14 +221,7 @@ function voortgang_filter_workorder_items(array $items, bool $hidePd, string $da
             }
         }
 
-        $filtered[] = [
-            'no' => voortgang_scalar_string($item['no'] ?? ''),
-            'status' => voortgang_scalar_string($item['status'] ?? ''),
-            'task_code' => $taskCode,
-            'start_date' => $startDate,
-            'proforma_amount' => voortgang_scalar_float($item['proforma_amount'] ?? 0),
-            'proformas' => voortgang_normalize_proforma_documents($item['proformas'] ?? []),
-        ];
+        $filtered[] = $normalized;
     }
 
     return $filtered;
@@ -575,14 +606,17 @@ function voortgang_append_workorder_item(array &$rows, string $contractNo, array
     }
 
     voortgang_ensure_row($rows, $contractNo);
-    $rows[$contractNo]['workorders'][] = [
+    $rows[$contractNo]['workorders'][] = voortgang_normalize_workorder_item([
         'no' => $no,
         'status' => voortgang_scalar_string($bcRow['Status'] ?? ''),
         'task_code' => voortgang_scalar_string($bcRow['Task_Code'] ?? ''),
+        'task_description' => voortgang_scalar_string($bcRow['Task_Description'] ?? ''),
+        'project_no' => voortgang_scalar_string($bcRow['Job_No'] ?? ''),
+        'project_status' => '',
         'start_date' => voortgang_parse_odata_date($bcRow['Start_Date'] ?? ''),
         'proforma_amount' => 0.0,
         'proformas' => [],
-    ];
+    ]);
 
     return true;
 }
@@ -1121,6 +1155,109 @@ function voortgang_apply_proforma_map_to_rows(array &$rows, array $proformaMap):
     unset($row);
 }
 
+/**
+ * @param array<string, mixed> $rows
+ * @return list<string>
+ */
+function voortgang_collect_project_nos_from_rows(array $rows): array
+{
+    $nos = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $projectNo = voortgang_scalar_string($item['project_no'] ?? '');
+            if ($projectNo !== '') {
+                $nos[] = $projectNo;
+            }
+        }
+    }
+
+    return voortgang_unique_nonempty_strings($nos);
+}
+
+/**
+ * @param list<string> $projectNos
+ * @return array<string, string>
+ */
+function voortgang_fetch_project_status_map(string $company, array $projectNos): array
+{
+    $projectNos = voortgang_unique_nonempty_strings($projectNos);
+    if ($projectNos === []) {
+        return [];
+    }
+
+    $map = [];
+    foreach (array_chunk($projectNos, 40) as $chunk) {
+        $filter = voortgang_odata_eq_or_filter('No', $chunk);
+        if ($filter === '') {
+            continue;
+        }
+
+        voortgang_paginate_entity(
+            $company,
+            VOORTGANG_PROJECTS_ENTITY,
+            [
+                '$select' => VOORTGANG_PROJECTS_SELECT,
+                '$filter' => $filter,
+            ],
+            static function (array $row) use (&$map): bool {
+                $no = voortgang_scalar_string($row['No'] ?? '');
+                if ($no === '') {
+                    return false;
+                }
+
+                $map[$no] = voortgang_scalar_string($row['Status'] ?? '');
+
+                return true;
+            }
+        );
+    }
+
+    return $map;
+}
+
+/**
+ * @param array<string, mixed> $rows
+ * @param array<string, string> $statusMap
+ */
+function voortgang_apply_project_status_map_to_rows(array &$rows, array $statusMap): void
+{
+    foreach ($rows as &$row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $items = is_array($row['workorders'] ?? null) ? $row['workorders'] : [];
+        foreach ($items as &$item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $projectNo = voortgang_scalar_string($item['project_no'] ?? '');
+            if ($projectNo !== '' && isset($statusMap[$projectNo])) {
+                $item['project_status'] = voortgang_scalar_string($statusMap[$projectNo]);
+            } else {
+                $item['project_status'] = voortgang_scalar_string($item['project_status'] ?? '');
+            }
+        }
+        unset($item);
+
+        $row['workorders'] = $items;
+    }
+    unset($row);
+}
+
+function voortgang_attach_project_statuses(string $company, array &$rows): void
+{
+    $statusMap = voortgang_fetch_project_status_map($company, voortgang_collect_project_nos_from_rows($rows));
+    voortgang_apply_project_status_map_to_rows($rows, $statusMap);
+}
+
 function voortgang_finalize_rows(array $rows): array
 {
     $list = [];
@@ -1161,6 +1298,7 @@ function voortgang_refresh_company(string $company): array
         $workorderStats = voortgang_fetch_workorders_into_rows($company, $rows);
         $proformaMap = voortgang_fetch_proforma_map($company);
         voortgang_apply_proforma_map_to_rows($rows, $proformaMap);
+        voortgang_attach_project_statuses($company, $rows);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
         $finalRows = voortgang_finalize_rows($rows);
         $dateBounds = voortgang_workorder_date_bounds_from_rows($finalRows);
@@ -1419,6 +1557,7 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
     }
     $proformaMap = voortgang_fetch_proforma_map($company, $workorderNos);
     voortgang_apply_proforma_map_to_rows($rows, $proformaMap);
+    voortgang_attach_project_statuses($company, $rows);
 
     voortgang_paginate_entity(
         $company,
