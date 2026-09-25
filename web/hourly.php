@@ -5,6 +5,9 @@ error_reporting(E_ALL);
 
 /**
  * Includes/requires
+ *
+ * hourly.php doet vandaag geen BC-OData (skipped). Gereserveerd:
+ * LACHESIS_HOURLY_MAX_AGE (1800) voor eventuele toekomstige Mímir-fetches.
  */
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';

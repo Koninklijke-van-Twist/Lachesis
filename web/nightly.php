@@ -8,6 +8,8 @@ ini_set('memory_limit', '512M');
 
 /**
  * Includes/requires
+ *
+ * Mímir max_age op nightly-fetches: LACHESIS_NIGHTLY_MAX_AGE (14400).
  */
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
@@ -41,6 +43,8 @@ function voortgang_nightly_send_json(array $payload, int $status = 200): never
  */
 
 $startedAt = time();
+// Nightly Mímir max_age = 4h (LACHESIS_NIGHTLY_MAX_AGE). UI/on-demand keeps LACHESIS_ODATA_TTL.
+$GLOBALS['lachesis_odata_max_age'] = defined('LACHESIS_NIGHTLY_MAX_AGE') ? LACHESIS_NIGHTLY_MAX_AGE : 14400;
 $requestedCompany = trim((string) ($_GET['company'] ?? ''));
 $companies = voortgang_nightly_companies($requestedCompany);
 $results = [];

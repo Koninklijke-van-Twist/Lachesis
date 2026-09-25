@@ -8,6 +8,23 @@ require_once __DIR__ . '/bc_data.php';
 require_once __DIR__ . '/odata.php';
 
 /**
+ * Effectieve Mímir max_age / legacy TTL-hint voor OData-fetches.
+ * Nightly zet $GLOBALS['lachesis_odata_max_age'] = LACHESIS_NIGHTLY_MAX_AGE.
+ */
+function voortgang_odata_max_age(): int
+{
+    $override = $GLOBALS['lachesis_odata_max_age'] ?? null;
+    if (is_int($override) && $override >= 0) {
+        return $override;
+    }
+    if (is_numeric($override) && (int) $override >= 0) {
+        return (int) $override;
+    }
+
+    return defined('LACHESIS_ODATA_TTL') ? LACHESIS_ODATA_TTL : 3600;
+}
+
+/**
  * Functies
  */
 
@@ -335,27 +352,57 @@ function voortgang_bc_auth(string $company = ''): array
 {
     global $baseUrl;
 
+    $mimirOn = function_exists('odata_mimir_enabled') && odata_mimir_enabled();
+
     $companyName = trim($company);
     if ($companyName !== '') {
-        auth_set_current_company_context($companyName, 1);
-        $env = auth_get_environment_for_company($companyName, 1);
+        try {
+            auth_set_current_company_context($companyName, 1);
+        } catch (Throwable $ignored) {
+            if (!$mimirOn) {
+                throw $ignored;
+            }
+        }
+        try {
+            $env = auth_get_environment_for_company($companyName, 1);
+        } catch (Throwable $ignored) {
+            $env = $mimirOn ? auth_get_primary_environment() : '';
+            if ($env === '' && !$mimirOn) {
+                throw $ignored;
+            }
+        }
     } else {
         $env = auth_get_primary_environment();
     }
 
     $env = trim((string) $env);
-    $authConfig = $env !== '' ? auth_get_auth_for_environment($env) : [];
-
-    if ($env === '') {
-        throw new RuntimeException('Environment ontbreekt in auth-configuratie.');
+    try {
+        $authConfig = $env !== '' ? auth_get_auth_for_environment($env) : [];
+    } catch (Throwable $ignored) {
+        $authConfig = [];
+        if (!$mimirOn) {
+            throw $ignored;
+        }
     }
 
-    if ($authConfig === []) {
+    if ($env === '' && !$mimirOn) {
+        throw new RuntimeException('Environment ontbreekt in auth-configuratie.');
+    }
+    if ($env === '') {
+        $env = 'mimir';
+    }
+
+    if ($authConfig === [] && !$mimirOn) {
         throw new RuntimeException('Geen auth-configuratie gevonden voor environment: ' . $env);
     }
 
+    $resolvedBase = trim((string) ($baseUrl ?? ''));
+    if ($resolvedBase === '' && $mimirOn) {
+        $resolvedBase = 'https://mimir.invalid/';
+    }
+
     return [
-        'baseUrl' => (string) ($baseUrl ?? ''),
+        'baseUrl' => $resolvedBase,
         'environment' => $env,
         'auth' => $authConfig,
     ];
@@ -528,6 +575,28 @@ function voortgang_odata_get_json(string $url, array $auth): array
 
 function voortgang_paginate_entity(string $company, string $entitySet, array $query, callable $onRow): array
 {
+    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
+        $ttl = voortgang_odata_max_age();
+        $rows = odata_mimir_query($company, $entitySet, $query, $ttl === 0 ? 3600 : $ttl);
+        $kept = 0;
+        $read = 0;
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $read++;
+            if ($onRow($row)) {
+                $kept++;
+            }
+        }
+
+        return [
+            'kept' => $kept,
+            'read' => $read,
+            'pages' => $read > 0 ? 1 : 0,
+        ];
+    }
+
     $ctx = voortgang_bc_auth($company);
     if ($ctx['baseUrl'] === '') {
         throw new RuntimeException('baseUrl ontbreekt in auth-configuratie.');
