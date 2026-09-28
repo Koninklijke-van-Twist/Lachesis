@@ -185,15 +185,6 @@ function odata_bc_environment(): ?string
     return null;
 }
 
-function odata_bc_auth_php_path(): string
-{
-    $override = $GLOBALS['LACHESIS_AUTH_PHP_PATH'] ?? '';
-    if (is_string($override) && trim($override) !== '') {
-        return $override;
-    }
-    return __DIR__ . '/auth.php';
-}
-
 function odata_bc_global_is_configured(string $name): bool
 {
     if (!array_key_exists($name, $GLOBALS)) {
@@ -227,27 +218,45 @@ function odata_bc_global_is_configured(string $name): bool
  * Laadt auth.php in een closure en kopieert BC-variabelen naar $GLOBALS.
  * Een require binnen een functie maakt anders alleen lokale variabelen.
  * Al gezette waarden (geen mimir-placeholder) blijven staan.
+ * auth_list hoort bij een volledige config: generieke $auth alleen is niet genoeg.
+ * Eenmaal geprobeerd laden wordt niet herhaald als auth.php geen auth_list heeft.
  */
 function odata_bc_ensure_config_loaded(): void
 {
-    if (odata_bc_base_url() !== null && odata_bc_environment() !== null && odata_bc_auth_for_fallback([]) !== null) {
+    if (
+        odata_bc_base_url() !== null
+        && odata_bc_environment() !== null
+        && odata_bc_auth_for_fallback([]) !== null
+        && odata_bc_global_is_configured('auth_list')
+    ) {
         return;
     }
-    $path = odata_bc_auth_php_path();
-    if (!is_file($path)) {
+
+    $loader = $GLOBALS['LACHESIS_AUTH_LOAD'] ?? null;
+    $useLoader = is_callable($loader);
+    $path = __DIR__ . '/auth.php';
+    if (!$useLoader && !is_file($path)) {
         return;
     }
-    if (!isset($GLOBALS['LACHESIS_BC_AUTH_LOADED']) || !is_array($GLOBALS['LACHESIS_BC_AUTH_LOADED'])) {
-        $GLOBALS['LACHESIS_BC_AUTH_LOADED'] = [];
+    if (!$useLoader) {
+        if (!isset($GLOBALS['LACHESIS_BC_AUTH_LOADED']) || !is_array($GLOBALS['LACHESIS_BC_AUTH_LOADED'])) {
+            $GLOBALS['LACHESIS_BC_AUTH_LOADED'] = [];
+        }
+        if (!empty($GLOBALS['LACHESIS_BC_AUTH_LOADED'][$path])) {
+            return;
+        }
+        $GLOBALS['LACHESIS_BC_AUTH_LOADED'][$path] = true;
+        $loaded = (static function (): array {
+            require __DIR__ . '/auth.php';
+            return get_defined_vars();
+        })();
+    } else {
+        $loaded = $loader();
+        if (!is_array($loaded)) {
+            return;
+        }
     }
-    if (!empty($GLOBALS['LACHESIS_BC_AUTH_LOADED'][$path])) {
-        return;
-    }
-    $GLOBALS['LACHESIS_BC_AUTH_LOADED'][$path] = true;
-    $loaded = (static function (string $authPath): array {
-        require $authPath;
-        return get_defined_vars();
-    })($path);
+
     foreach (['baseUrl', 'auth', 'auth_list', 'environment', 'base'] as $name) {
         if (!array_key_exists($name, $loaded)) {
             continue;

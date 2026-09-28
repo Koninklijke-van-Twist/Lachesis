@@ -329,7 +329,10 @@ $auth_list = [];
 $GLOBALS['auth_list'] = [];
 unset($GLOBALS['base']);
 unset($GLOBALS['LACHESIS_BC_AUTH_LOADED']);
-$GLOBALS['LACHESIS_AUTH_PHP_PATH'] = $tmpAuth;
+$GLOBALS['LACHESIS_AUTH_LOAD'] = static function () use ($tmpAuth): array {
+    require $tmpAuth;
+    return get_defined_vars();
+};
 odata_bc_ensure_config_loaded();
 $loadedBase = odata_bc_base_url();
 $loadedUser = (string) ($GLOBALS['auth_list']['LoadedEnv']['user'] ?? '');
@@ -338,7 +341,7 @@ $loadedBaseAlias = $GLOBALS['base'] ?? null;
 require_once $tmpAuth;
 $baseAfterSecondInclude = odata_bc_base_url();
 @unlink($tmpAuth);
-unset($GLOBALS['LACHESIS_AUTH_PHP_PATH']);
+unset($GLOBALS['LACHESIS_AUTH_LOAD']);
 if ($loadedBase !== 'https://kept.example:7148/') {
     fail('gezette baseUrl werd overschreven, base=' . var_export($loadedBase, true));
 }
@@ -354,5 +357,70 @@ if ($baseAfterSecondInclude !== 'https://kept.example:7148/') {
 if (strpos(fallback_log(), 'loaded-secret') !== false) {
     fail('log bevat het wachtwoord uit auth.php');
 }
+
+$mimirApi = 'mimir_test_key_should_not_leak';
+$GLOBALS['mimirApi'] = $mimirApi;
+$mimirBase = 'http://127.0.0.1:9';
+$baseUrl = 'https://kept.example:7148/';
+$GLOBALS['baseUrl'] = $baseUrl;
+$environment = 'Production';
+$GLOBALS['environment'] = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+$GLOBALS['auth'] = $auth;
+$auth_list = [];
+$GLOBALS['auth_list'] = [];
+unset($GLOBALS['LACHESIS_BC_AUTH_LOADED']);
+$authListLoads = 0;
+$GLOBALS['LACHESIS_AUTH_LOAD'] = static function () use (&$authListLoads): array {
+    $authListLoads++;
+    return [
+        'baseUrl' => 'https://should-not-replace.example:7148/',
+        'environment' => 'ShouldNotReplace',
+        'auth' => ['mode' => 'basic', 'user' => 'should-not-replace', 'pass' => 'replace-secret'],
+        'auth_list' => [
+            'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-list-secret'],
+        ],
+    ];
+};
+$GLOBALS['demeter_company_environment_map'] = [
+    'Hunter van Twist' => 'Sandbox',
+];
+odata_bc_ensure_config_loaded();
+odata_bc_ensure_config_loaded();
+if ($authListLoads !== 1) {
+    fail('auth-config werd opnieuw geladen terwijl auth_list al compleet is: ' . $authListLoads);
+}
+if (odata_bc_base_url() !== 'https://kept.example:7148/') {
+    fail('lazy load overschreef baseUrl: ' . var_export(odata_bc_base_url(), true));
+}
+if (odata_bc_environment() !== 'Production') {
+    fail('lazy load overschreef environment: ' . var_export(odata_bc_environment(), true));
+}
+if ((string) ($GLOBALS['auth']['user'] ?? '') !== 'bcuser') {
+    fail('lazy load overschreef generieke auth: ' . var_export($GLOBALS['auth']['user'] ?? null, true));
+}
+if ((string) ($GLOBALS['auth_list']['Sandbox']['user'] ?? '') !== 'sandbox-user') {
+    fail('auth_list uit de lazy load ontbreekt: ' . json_encode($GLOBALS['auth_list']));
+}
+odata_mimir_circuit_reset();
+$beforeAuthList = count($calls);
+$authListRows = odata_mimir_query('Hunter van Twist', 'AppResource', ['$select' => 'No'], 30);
+if (($authListRows[0]['No'] ?? '') !== 'WO-1') {
+    fail('query met nageladen auth_list gaf geen rijen');
+}
+$authListCall = $calls[$beforeAuthList] ?? null;
+if (!is_array($authListCall)
+    || strpos((string) ($authListCall['url'] ?? ''), "https://kept.example:7148/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppResource?") !== 0
+    || ($authListCall['user'] ?? '') !== 'sandbox-user'
+) {
+    fail('de nageladen auth_list werd niet gebruikt voor het gemapte bedrijf: ' . json_encode($authListCall));
+}
+if ($authListLoads !== 1) {
+    fail('query laadde auth-config opnieuw: ' . $authListLoads);
+}
+if (strpos(fallback_log(), 'sandbox-list-secret') !== false || strpos(fallback_log(), 'replace-secret') !== false) {
+    fail('log bevat een geheim uit de nageladen auth_list');
+}
+unset($GLOBALS['LACHESIS_AUTH_LOAD']);
 
 echo "OK\n";
