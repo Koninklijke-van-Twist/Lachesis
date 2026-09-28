@@ -30,16 +30,33 @@ function bc_company_entity_url(string $baseUrl, string $environment, string $com
 
 function bc_fetch_rows(string $company, string $entitySet, array $query, int $ttl = 3600): array
 {
-    // Mímir-modus: geen environment / auth / baseUrl nodig.
-    if (odata_mimir_enabled()) {
-        return odata_mimir_query($company, $entitySet, $query, $ttl === 0 ? 3600 : $ttl);
+    $direct = static function () use ($company, $entitySet, $query, $ttl): array {
+        return bc_fetch_rows_direct($company, $entitySet, $query, $ttl);
+    };
+
+    if (odata_mimir_enabled() && function_exists('odata_mimir_or_direct') && function_exists('odata_mimir_query_impl')) {
+        return odata_mimir_or_direct(
+            static function () use ($company, $entitySet, $query, $ttl): array {
+                return odata_mimir_query_impl($company, $entitySet, $query, $ttl === 0 ? 3600 : $ttl);
+            },
+            $direct
+        );
     }
 
+    return $direct();
+}
+
+function bc_fetch_rows_direct(string $company, string $entitySet, array $query, int $ttl = 3600): array
+{
     global $baseUrl;
 
     $environment = auth_get_environment_for_company($company, $ttl);
     $auth = auth_get_auth_for_environment($environment);
     $url = bc_company_entity_url($baseUrl, $environment, $company, $entitySet, $query);
+
+    if (function_exists('odata_get_all_direct') && function_exists('odata_mimir_circuit_open') && odata_mimir_circuit_open()) {
+        return odata_get_all_direct($url, $auth, $ttl);
+    }
 
     return odata_get_all($url, $auth, $ttl);
 }
@@ -65,22 +82,10 @@ function bc_default_companies(): array
 function bc_companies_for_page(int $ttl = 3600): array
 {
     try {
-        if (odata_mimir_enabled()) {
-            $companies = odata_mimir_list_companies(null);
-            // Vul demeter_* globals / map voor eventuele callers.
-            try {
-                auth_discover_companies_across_active_environments($ttl);
-            } catch (Throwable $ignored) {
-            }
-            if ($companies !== []) {
-                return $companies;
-            }
-        } else {
-            $result = auth_discover_companies_across_active_environments($ttl);
-            $companies = is_array($result['companies'] ?? null) ? $result['companies'] : [];
-            if ($companies !== []) {
-                return $companies;
-            }
+        $result = auth_discover_companies_across_active_environments($ttl);
+        $companies = is_array($result['companies'] ?? null) ? $result['companies'] : [];
+        if ($companies !== []) {
+            return $companies;
         }
     } catch (Throwable $ignored) {
     }

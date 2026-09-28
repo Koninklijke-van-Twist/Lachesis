@@ -10,6 +10,8 @@ ini_set('memory_limit', '512M');
  * Includes/requires
  *
  * Mímir max_age op nightly-fetches: LACHESIS_NIGHTLY_MAX_AGE (14400).
+ * auth.php moet $mimirApi én de BC-credentials bevatten; bij een Mímir-fout
+ * valt deze run (CLI of GET) terug op het directe BC-pad.
  */
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
