@@ -728,7 +728,7 @@ function odata_direct_companies_as_rows(?string $environmentFilter = null): arra
             continue;
         }
         $attempted = true;
-        $url = rtrim($base, '/') . '/' . rawurlencode($env) . '/ODataV4/Company';
+        $url = rtrim($base, '/') . '/' . rawurlencode($env) . '/ODataV4/Company?$select=Name';
         $rows = odata_get_all_direct($url, $auth, 300);
         foreach ($rows as $row) {
             if (!is_array($row)) {
