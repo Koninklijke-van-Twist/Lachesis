@@ -1047,7 +1047,7 @@ function voortgang_fetch_workorders_by_nos(string $company, array $workorderNos)
             $company,
             VOORTGANG_WORKORDERS_ENTITY,
             [
-                '$select' => VOORTGANG_WORKORDERS_SELECT,
+                '$select' => VOORTGANG_WORKORDERS_BY_NO_SELECT,
                 '$filter' => $woFilter,
             ],
             static function (array $row) use (&$map): bool {
