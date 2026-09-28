@@ -76,6 +76,7 @@ function auth_get_active_environments(): array
     }
 
     $known = is_array($auth_list ?? null) ? array_keys($auth_list) : [];
+    $unfiltered = $configured;
     if ($configured !== []) {
         $knownMap = array_fill_keys($known, true);
         $configured = array_values(array_filter($configured, static function (string $item) use ($knownMap): bool {
@@ -119,6 +120,14 @@ function auth_get_active_environments(): array
         }
     }
 
+    if ($known === []) {
+        foreach ($unfiltered as $candidate) {
+            if (strcasecmp($candidate, 'mimir') !== 0) {
+                return [$candidate];
+            }
+        }
+    }
+
     return $configured;
 }
 
@@ -129,6 +138,37 @@ function auth_get_primary_environment(): string
 {
     $active = auth_get_active_environments();
     return (string) ($active[0] ?? '');
+}
+
+function auth_bc_credentials_usable($auth): bool
+{
+    if (!is_array($auth)) {
+        return false;
+    }
+    if (function_exists('odata_auth_is_usable')) {
+        return odata_auth_is_usable($auth);
+    }
+    $user = trim((string) ($auth['user'] ?? ''));
+    if ($user === '') {
+        return false;
+    }
+    $mode = (string) ($auth['mode'] ?? '');
+    if ($mode !== 'basic' && $mode !== 'ntlm') {
+        return false;
+    }
+    return array_key_exists('pass', $auth);
+}
+
+function auth_generic_bc_auth(): array
+{
+    if (isset($GLOBALS['auth']) && auth_bc_credentials_usable($GLOBALS['auth'])) {
+        return $GLOBALS['auth'];
+    }
+    $saved = $GLOBALS['lachesis_original_auth'] ?? null;
+    if (auth_bc_credentials_usable($saved)) {
+        return $saved;
+    }
+    return [];
 }
 
 /**
@@ -148,16 +188,41 @@ function auth_get_auth_for_environment(string $environment): array
         throw new RuntimeException('Environment ontbreekt in auth-configuratie.');
     }
 
-    $auth = $list[$environmentKey] ?? null;
-    if (!is_array($auth)) {
-        // Mímir nog gezond en geen BC-auth: leftover callers krijgen lege auth i.p.v. exception.
-        if (auth_mimir_bc_optional()) {
-            return [];
+    $resolved = null;
+    if (isset($list[$environmentKey]) && is_array($list[$environmentKey])) {
+        $resolved = $list[$environmentKey];
+    } elseif (!auth_mimir_bc_optional()) {
+        foreach ($list as $key => $candidate) {
+            if (is_array($candidate) && strcasecmp((string) $key, $environmentKey) === 0) {
+                $resolved = $candidate;
+                break;
+            }
         }
-        throw new RuntimeException('Geen auth-configuratie gevonden voor environment: ' . $environmentKey);
     }
 
-    return $auth;
+    if (is_array($resolved)) {
+        return $resolved;
+    }
+
+    // Mímir nog gezond en geen BC-auth: leftover callers krijgen lege auth i.p.v. exception.
+    if (auth_mimir_bc_optional()) {
+        return [];
+    }
+
+    $listEmpty = $list === [];
+    $primary = $GLOBALS['environment'] ?? null;
+    $primaryName = is_string($primary) ? trim($primary) : '';
+    $matchesPrimary = $primaryName !== ''
+        && strcasecmp($primaryName, 'mimir') !== 0
+        && strcasecmp($primaryName, $environmentKey) === 0;
+    if ($listEmpty || $matchesPrimary) {
+        $generic = auth_generic_bc_auth();
+        if ($generic !== []) {
+            return $generic;
+        }
+    }
+
+    throw new RuntimeException('Geen auth-configuratie gevonden voor environment: ' . $environmentKey);
 }
 
 /**
@@ -181,7 +246,16 @@ function auth_build_companies_urls(string $environment): array
     global $baseUrl;
 
     $base = trim((string) ($baseUrl ?? ''));
-    if ($base === '') {
+    if ($base === '' || stripos($base, 'mimir.invalid') !== false) {
+        $alias = $GLOBALS['base'] ?? null;
+        if (is_string($alias)) {
+            $alias = trim($alias);
+            if ($alias !== '' && stripos($alias, 'mimir.invalid') === false && preg_match('#^https?://#i', $alias) === 1) {
+                $base = $alias;
+            }
+        }
+    }
+    if ($base === '' || stripos($base, 'mimir.invalid') !== false) {
         throw new RuntimeException('baseUrl ontbreekt in auth-configuratie.');
     }
 
@@ -595,6 +669,10 @@ function auth_set_current_company_context(?string $company, int $ttlSeconds = 30
 {
     global $environment, $auth;
 
+    if (!array_key_exists('lachesis_original_auth', $GLOBALS) && isset($auth) && is_array($auth) && $auth !== []) {
+        $GLOBALS['lachesis_original_auth'] = $auth;
+    }
+
     $companyName = trim((string) $company);
 
     if (auth_mimir_bc_optional()) {
@@ -620,7 +698,14 @@ function auth_set_current_company_context(?string $company, int $ttlSeconds = 30
         }
 
         $environment = $targetEnvironment;
-        $auth = $targetAuth;
+        if ($targetAuth !== []) {
+            $auth = $targetAuth;
+        } else {
+            $saved = $GLOBALS['lachesis_original_auth'] ?? null;
+            if (is_array($saved) && $saved !== []) {
+                $auth = $saved;
+            }
+        }
 
         return [
             'environment' => $targetEnvironment,
