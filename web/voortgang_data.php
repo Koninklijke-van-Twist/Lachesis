@@ -352,7 +352,9 @@ function voortgang_bc_auth(string $company = ''): array
 {
     global $baseUrl;
 
-    $mimirOn = function_exists('odata_mimir_enabled') && odata_mimir_enabled();
+    $mimirOn = function_exists('auth_mimir_bc_optional')
+        ? auth_mimir_bc_optional()
+        : (function_exists('odata_mimir_enabled') && odata_mimir_enabled());
 
     $companyName = trim($company);
     if ($companyName !== '') {
@@ -575,28 +577,42 @@ function voortgang_odata_get_json(string $url, array $auth): array
 
 function voortgang_paginate_entity(string $company, string $entitySet, array $query, callable $onRow): array
 {
-    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
-        $ttl = voortgang_odata_max_age();
-        $rows = odata_mimir_query($company, $entitySet, $query, $ttl === 0 ? 3600 : $ttl);
-        $kept = 0;
-        $read = 0;
-        foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            $read++;
-            if ($onRow($row)) {
-                $kept++;
-            }
-        }
+    $direct = static function () use ($company, $entitySet, $query, $onRow): array {
+        return voortgang_paginate_entity_direct($company, $entitySet, $query, $onRow);
+    };
 
-        return [
-            'kept' => $kept,
-            'read' => $read,
-            'pages' => $read > 0 ? 1 : 0,
-        ];
+    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled() && function_exists('odata_mimir_or_direct') && function_exists('odata_mimir_query_impl')) {
+        return odata_mimir_or_direct(
+            static function () use ($company, $entitySet, $query, $onRow): array {
+                $ttl = voortgang_odata_max_age();
+                $rows = odata_mimir_query_impl($company, $entitySet, $query, $ttl === 0 ? 3600 : $ttl);
+                $kept = 0;
+                $read = 0;
+                foreach ($rows as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $read++;
+                    if ($onRow($row)) {
+                        $kept++;
+                    }
+                }
+
+                return [
+                    'kept' => $kept,
+                    'read' => $read,
+                    'pages' => $read > 0 ? 1 : 0,
+                ];
+            },
+            $direct
+        );
     }
 
+    return $direct();
+}
+
+function voortgang_paginate_entity_direct(string $company, string $entitySet, array $query, callable $onRow): array
+{
     $ctx = voortgang_bc_auth($company);
     if ($ctx['baseUrl'] === '') {
         throw new RuntimeException('baseUrl ontbreekt in auth-configuratie.');
