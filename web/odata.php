@@ -48,6 +48,16 @@ const LACHESIS_HOURLY_MAX_AGE = 1800;
 /** Mímir max_age for UI / on-demand / contract refresh (bestaande bc_fetch_rows-default). */
 const LACHESIS_ODATA_TTL = 3600;
 
+/**
+ * BC laat @odata.nextLink weg zodra $top gehaald is. Mímir stuurde dat plafond
+ * als 2000; een antwoord van exact deze grootte zonder nextLink is daarom
+ * geen bewijs dat de set op is.
+ */
+const LACHESIS_MIMIR_PAGE_CAP = 2000;
+
+/** Bovengrens op vervolgverzoeken (cap-pagina's of nextLink). */
+const LACHESIS_MIMIR_PAGE_GUARD = 100;
+
 function odata_mimir_api_key(): string
 {
     global $mimirApi;
@@ -571,6 +581,20 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
         throw new Exception('Mímir overgeslagen na eerdere fout in dit verzoek.');
     }
 
+    if (isset($GLOBALS['LACHESIS_MIMIR_REQUEST']) && is_callable($GLOBALS['LACHESIS_MIMIR_REQUEST'])) {
+        $decoded = $GLOBALS['LACHESIS_MIMIR_REQUEST'](strtoupper($method), ltrim($path, '/'), $jsonBody);
+        if (!is_array($decoded)) {
+            odata_mimir_fail(new Exception('Mímir gaf ongeldige JSON terug.'));
+        }
+        $errorField = $decoded['error'] ?? null;
+        if ($errorField !== null && $errorField !== '' && $errorField !== false) {
+            $message = is_string($errorField) ? $errorField : (string) json_encode($errorField, JSON_UNESCAPED_UNICODE);
+            odata_mimir_fail(new Exception('Mímir error: ' . $message));
+        }
+
+        return $decoded;
+    }
+
     $url = odata_mimir_base_url() . '/' . ltrim($path, '/');
     $headers = [
         'Accept: application/json',
@@ -824,7 +848,11 @@ function odata_mimir_company_environment_map(?string $environment = null): array
  * @param array<string, mixed> $odataQuery
  * @return list<array<string, mixed>>
  */
-function odata_mimir_query_impl(string $company, string $table, array $odataQuery, int $ttlSeconds): array
+/**
+ * @param array<string, mixed> $odataQuery
+ * @return array<string, mixed>
+ */
+function odata_mimir_query_response(string $company, string $table, array $odataQuery, int $ttlSeconds): array
 {
     consolelog("Mímir query company=$company table=$table\n");
 
@@ -858,9 +886,225 @@ function odata_mimir_query_impl(string $company, string $table, array $odataQuer
     if (!isset($response['value']) || !is_array($response['value'])) {
         odata_mimir_fail(new Exception("Mímir query-antwoord mist 'value'."));
     }
+
+    return $response;
+}
+
+function odata_mimir_query_impl(string $company, string $table, array $odataQuery, int $ttlSeconds): array
+{
+    $response = odata_mimir_query_response($company, $table, $odataQuery, $ttlSeconds);
     /** @var list<array<string, mixed>> $value */
     $value = $response['value'];
     return $value;
+}
+
+/**
+ * nextLink alleen volgen als die naar deze Mímir-API wijst. Een BC-link
+ * hoort bij het directe pad, niet bij het API-token.
+ */
+function odata_mimir_response_next_path(array $response): string
+{
+    $link = '';
+    if (isset($response['@odata.nextLink']) && is_string($response['@odata.nextLink'])) {
+        $link = trim($response['@odata.nextLink']);
+    } elseif (isset($response['nextLink']) && is_string($response['nextLink'])) {
+        $link = trim($response['nextLink']);
+    } elseif (isset($response['meta']) && is_array($response['meta'])) {
+        $metaNext = $response['meta']['nextLink'] ?? $response['meta']['next'] ?? '';
+        if (is_string($metaNext)) {
+            $link = trim($metaNext);
+        }
+    }
+    if ($link === '') {
+        return '';
+    }
+
+    if (preg_match('#^https?://#i', $link) === 1) {
+        $base = rtrim(odata_mimir_base_url(), '/');
+        $prefix = $base . '/';
+        if (!str_starts_with($link, $prefix)) {
+            return '';
+        }
+
+        return ltrim(substr($link, strlen($base)), '/');
+    }
+
+    return ltrim($link, '/');
+}
+
+/**
+ * @param array<string, mixed> $odataQuery
+ * @return array<string, mixed>
+ */
+function odata_mimir_query_with_column(array $odataQuery, string $column): array
+{
+    $column = trim($column);
+    if ($column === '') {
+        return $odataQuery;
+    }
+
+    $selectKey = array_key_exists('$select', $odataQuery) ? '$select' : (array_key_exists('select', $odataQuery) ? 'select' : '$select');
+    $select = trim((string) ($odataQuery[$selectKey] ?? ''));
+    if ($select === '') {
+        return $odataQuery;
+    }
+
+    foreach (explode(',', $select) as $col) {
+        if (strcasecmp(trim($col), $column) === 0) {
+            return $odataQuery;
+        }
+    }
+
+    $odataQuery[$selectKey] = $select . ',' . $column;
+
+    return $odataQuery;
+}
+
+/**
+ * @param list<mixed> $rows
+ */
+function odata_mimir_max_field(array $rows, string $field): string
+{
+    $max = '';
+    foreach ($rows as $row) {
+        if (!is_array($row) || !array_key_exists($field, $row) || !is_scalar($row[$field])) {
+            continue;
+        }
+        $value = trim((string) $row[$field]);
+        if ($value === '') {
+            continue;
+        }
+        if ($max === '' || strcmp($value, $max) > 0) {
+            $max = $value;
+        }
+    }
+
+    return $max;
+}
+
+function odata_mimir_odata_quote(string $value): string
+{
+    return str_replace("'", "''", $value);
+}
+
+/**
+ * @param list<mixed> $batch
+ * @param callable(array<string, mixed>): bool $onRow
+ * @return array{read: int, kept: int}
+ */
+function odata_mimir_emit_rows(array $batch, callable $onRow): array
+{
+    $read = 0;
+    $kept = 0;
+    foreach ($batch as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $read++;
+        if ($onRow($row)) {
+            $kept++;
+        }
+    }
+
+    return ['read' => $read, 'kept' => $kept];
+}
+
+/**
+ * Haalt een entity volledig op via Mímir.
+ * - @odata.nextLink (of meta.next) naar de Mímir-API wordt gevolgd.
+ * - Een pagina van exact LACHESIS_MIMIR_PAGE_CAP zonder nextLink wordt
+ *   vervolgd met `$cursorField gt 'laatste'`, tot een kortere pagina.
+ * - Meer dan het plafond in één antwoord is de hele set (top=0).
+ * - Zonder cursorveld en mét een volle cap-pagina: capped=true, onRow niet aangeroepen.
+ *
+ * @param array<string, mixed> $odataQuery
+ * @param callable(array<string, mixed>): bool $onRow
+ * @return array{read: int, kept: int, pages: int, capped: bool}
+ */
+function odata_mimir_collect_pages(string $company, string $table, array $odataQuery, int $ttlSeconds, string $cursorField, callable $onRow): array
+{
+    $cursorField = trim($cursorField);
+    $baseFilter = trim((string) ($odataQuery['$filter'] ?? $odataQuery['filter'] ?? ''));
+    if ($cursorField !== '') {
+        $odataQuery = odata_mimir_query_with_column($odataQuery, $cursorField);
+    }
+
+    $pages = 0;
+    $read = 0;
+    $kept = 0;
+    $guard = 0;
+    $cursor = '';
+
+    while ($guard < LACHESIS_MIMIR_PAGE_GUARD) {
+        $guard++;
+        $pageQuery = $odataQuery;
+        if ($cursor !== '') {
+            $extra = $cursorField . " gt '" . odata_mimir_odata_quote($cursor) . "'";
+            $pageQuery['$filter'] = $baseFilter === '' ? $extra : '(' . $baseFilter . ') and (' . $extra . ')';
+            unset($pageQuery['filter']);
+        }
+
+        $response = odata_mimir_query_response($company, $table, $pageQuery, $ttlSeconds);
+        /** @var list<mixed> $batch */
+        $batch = $response['value'];
+        if ($batch === [] && $pages > 0) {
+            return ['read' => $read, 'kept' => $kept, 'pages' => $pages, 'capped' => false];
+        }
+
+        $nextPath = odata_mimir_response_next_path($response);
+        if ($nextPath !== '') {
+            $emitted = odata_mimir_emit_rows($batch, $onRow);
+            $read += $emitted['read'];
+            $kept += $emitted['kept'];
+            $pages++;
+            while ($nextPath !== '' && $guard < LACHESIS_MIMIR_PAGE_GUARD) {
+                $guard++;
+                $followed = odata_mimir_request('GET', $nextPath, null);
+                if (!isset($followed['value']) || !is_array($followed['value'])) {
+                    odata_mimir_fail(new Exception("Mímir query-antwoord mist 'value'."));
+                }
+                /** @var list<mixed> $batch */
+                $batch = $followed['value'];
+                $emitted = odata_mimir_emit_rows($batch, $onRow);
+                $read += $emitted['read'];
+                $kept += $emitted['kept'];
+                $pages++;
+                $nextPath = odata_mimir_response_next_path($followed);
+            }
+            if ($nextPath !== '') {
+                throw new RuntimeException('Mímir-paginering gestopt na ' . (string) LACHESIS_MIMIR_PAGE_GUARD . ' pagina\'s.');
+            }
+
+            return ['read' => $read, 'kept' => $kept, 'pages' => $pages, 'capped' => false];
+        }
+
+        $count = count($batch);
+        if ($count === LACHESIS_MIMIR_PAGE_CAP) {
+            $nextCursor = $cursorField === '' ? '' : odata_mimir_max_field($batch, $cursorField);
+            if ($cursorField === '' || $nextCursor === '' || strcmp($nextCursor, $cursor) <= 0) {
+                if ($read > 0) {
+                    throw new RuntimeException('Mímir-pagina van ' . (string) LACHESIS_MIMIR_PAGE_CAP . ' rijen kon niet worden vervolgd.');
+                }
+
+                return ['read' => 0, 'kept' => 0, 'pages' => $pages, 'capped' => true];
+            }
+            $emitted = odata_mimir_emit_rows($batch, $onRow);
+            $read += $emitted['read'];
+            $kept += $emitted['kept'];
+            $pages++;
+            $cursor = $nextCursor;
+            continue;
+        }
+
+        $emitted = odata_mimir_emit_rows($batch, $onRow);
+        $read += $emitted['read'];
+        $kept += $emitted['kept'];
+        $pages++;
+
+        return ['read' => $read, 'kept' => $kept, 'pages' => $pages, 'capped' => false];
+    }
+
+    throw new RuntimeException('Mímir-paginering gestopt na ' . (string) LACHESIS_MIMIR_PAGE_GUARD . ' pagina\'s.');
 }
 
 /**
