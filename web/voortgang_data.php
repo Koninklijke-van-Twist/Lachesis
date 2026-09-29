@@ -575,33 +575,49 @@ function voortgang_odata_get_json(string $url, array $auth): array
     return $json;
 }
 
+/**
+ * Sleutel waarmee een volle Mímir-cap-pagina (exact 2000, geen nextLink)
+ * veilig vervolgd kan worden. Leeg = geen unieke sleutel in de select;
+ * dan valt de aanroep terug op het directe BC-pad.
+ */
+function voortgang_mimir_cursor_field(string $entitySet): string
+{
+    if ($entitySet === VOORTGANG_WORKORDERS_ENTITY || $entitySet === VOORTGANG_PROJECTS_ENTITY) {
+        return 'No';
+    }
+    if ($entitySet === VOORTGANG_CONTRACTS_ENTITY) {
+        return 'Contract_No';
+    }
+
+    return '';
+}
+
 function voortgang_paginate_entity(string $company, string $entitySet, array $query, callable $onRow): array
 {
     $direct = static function () use ($company, $entitySet, $query, $onRow): array {
         return voortgang_paginate_entity_direct($company, $entitySet, $query, $onRow);
     };
 
-    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled() && function_exists('odata_mimir_or_direct') && function_exists('odata_mimir_query_impl')) {
+    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled() && function_exists('odata_mimir_or_direct') && function_exists('odata_mimir_collect_pages')) {
         return odata_mimir_or_direct(
-            static function () use ($company, $entitySet, $query, $onRow): array {
+            static function () use ($company, $entitySet, $query, $onRow, $direct): array {
                 $ttl = voortgang_odata_max_age();
-                $rows = odata_mimir_query_impl($company, $entitySet, $query, $ttl === 0 ? 3600 : $ttl);
-                $kept = 0;
-                $read = 0;
-                foreach ($rows as $row) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    $read++;
-                    if ($onRow($row)) {
-                        $kept++;
-                    }
+                $collected = odata_mimir_collect_pages(
+                    $company,
+                    $entitySet,
+                    $query,
+                    $ttl === 0 ? 3600 : $ttl,
+                    voortgang_mimir_cursor_field($entitySet),
+                    $onRow
+                );
+                if (!empty($collected['capped'])) {
+                    return $direct();
                 }
 
                 return [
-                    'kept' => $kept,
-                    'read' => $read,
-                    'pages' => $read > 0 ? 1 : 0,
+                    'kept' => (int) ($collected['kept'] ?? 0),
+                    'read' => (int) ($collected['read'] ?? 0),
+                    'pages' => (int) ($collected['pages'] ?? 0),
                 ];
             },
             $direct
