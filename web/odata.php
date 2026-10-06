@@ -207,27 +207,100 @@ function odata_bc_base_url(): ?string
     return null;
 }
 
+/**
+ * Environmentnamen uit een auth.php-waarde: string ("a, b") of array. Lege
+ * waarden en de Mímir-placeholder vallen weg, dubbele namen ook.
+ *
+ * @return list<string>
+ */
+function odata_environment_names($value): array
+{
+    $items = [];
+    if (is_array($value)) {
+        $items = $value;
+    } elseif (is_string($value)) {
+        $items = preg_split('/[\s,;]+/', $value) ?: [];
+    }
+
+    $names = [];
+    $seen = [];
+    foreach ($items as $item) {
+        if (!is_scalar($item)) {
+            continue;
+        }
+        $name = trim((string) $item);
+        if ($name === '' || strcasecmp($name, 'mimir') === 0) {
+            continue;
+        }
+        $key = strtolower($name);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $names[] = $name;
+    }
+
+    return $names;
+}
+
+/**
+ * Bewaart $environment zoals auth.php hem zette, voordat een company-context of de
+ * Mímir-placeholder hem overschrijft.
+ */
+function odata_remember_configured_environments(): void
+{
+    if (array_key_exists('lachesis_configured_environment', $GLOBALS)) {
+        return;
+    }
+    $names = odata_environment_names($GLOBALS['environment'] ?? null);
+    if ($names === []) {
+        $names = odata_environment_names($GLOBALS['primaryEnvironment'] ?? null);
+    }
+    if ($names !== []) {
+        $GLOBALS['lachesis_configured_environment'] = $names;
+    }
+}
+
+/**
+ * Actieve environments uit auth.php: $environment (string of array, zoals
+ * oorspronkelijk geconfigureerd), anders $primaryEnvironment. Nooit de eerste
+ * sleutel van $auth_list: die lijst bevat ook test-environments (kvtfat_aad, …).
+ *
+ * @return list<string>
+ */
+function odata_configured_environments(): array
+{
+    $sources = [
+        $GLOBALS['lachesis_configured_environment'] ?? null,
+        $GLOBALS['environment'] ?? null,
+        $GLOBALS['primaryEnvironment'] ?? null,
+    ];
+    foreach ($sources as $value) {
+        $names = odata_environment_names($value);
+        if ($names !== []) {
+            return $names;
+        }
+    }
+
+    return [];
+}
+
+/**
+ * Huidige BC-environment: een door de company-context gezette string, anders de
+ * eerste geconfigureerde environment ($environment[0] / $primaryEnvironment).
+ */
 function odata_bc_environment(): ?string
 {
-    global $environment, $auth_list;
-    if (isset($environment) && is_string($environment)) {
-        $env = trim($environment);
-        if ($env !== '' && strcasecmp($env, 'mimir') !== 0) {
-            return $env;
+    $current = $GLOBALS['environment'] ?? null;
+    if (is_string($current)) {
+        $names = odata_environment_names($current);
+        if (count($names) === 1) {
+            return $names[0];
         }
     }
-    if (isset($auth_list) && is_array($auth_list)) {
-        foreach ($auth_list as $key => $entry) {
-            $candidate = trim((string) $key);
-            if ($candidate === '' || strcasecmp($candidate, 'mimir') === 0) {
-                continue;
-            }
-            if (odata_auth_is_usable($entry)) {
-                return $candidate;
-            }
-        }
-    }
-    return null;
+    $configured = odata_configured_environments();
+
+    return $configured[0] ?? null;
 }
 
 function odata_bc_global_is_configured(string $name): bool
@@ -367,9 +440,8 @@ function odata_bc_auth_for_named_environment(string $env, array $passed = []): ?
         }
     }
     $listEmpty = !isset($auth_list) || !is_array($auth_list) || $auth_list === [];
-    $primary = $GLOBALS['environment'] ?? null;
-    $primaryName = is_string($primary) ? trim($primary) : '';
-    $matchesPrimary = $primaryName !== '' && strcasecmp($primaryName, 'mimir') !== 0 && strcasecmp($primaryName, $env) === 0;
+    $primaryName = (string) (odata_bc_environment() ?? '');
+    $matchesPrimary = $primaryName !== '' && strcasecmp($primaryName, $env) === 0;
     if (!$listEmpty && !$matchesPrimary) {
         return null;
     }
@@ -469,24 +541,8 @@ function odata_bc_environment_list(?string $environmentFilter = null): array
     if ($filter !== '' && strcasecmp($filter, 'mimir') !== 0) {
         return [$filter];
     }
-    $envs = [];
-    global $auth_list;
-    if (isset($auth_list) && is_array($auth_list)) {
-        foreach ($auth_list as $key => $entry) {
-            $env = trim((string) $key);
-            if ($env === '' || strcasecmp($env, 'mimir') === 0 || !odata_auth_is_usable($entry)) {
-                continue;
-            }
-            $envs[] = $env;
-        }
-    }
-    if ($envs === []) {
-        $env = odata_bc_environment();
-        if ($env !== null) {
-            $envs[] = $env;
-        }
-    }
-    return $envs;
+    // Alleen de geconfigureerde environments, niet elke sleutel van $auth_list.
+    return odata_configured_environments();
 }
 
 function odata_bc_credentials_configured(): bool
@@ -1300,8 +1356,12 @@ function odata_mimir_fetch_all(string $url, int $ttlSeconds): array
 // Placeholders alleen als BC-globals ontbreken. Echte $baseUrl / $environment / $auth
 // blijven staan zodat de directe fallback ze kan gebruiken. Zonder die credentials
 // gooit de fallback de oorspronkelijke Mímir-fout opnieuw.
+// Een $environment-array (gesplitste credentials, bijv. ['kvtmdlive_aad', 'kvtgermanylive_aad'])
+// is een echte config en blijft staan. Eerder werd die hier 'mimir', waarna de
+// directe fallback de eerste $auth_list-sleutel (kvtfat_aad) koos: HTTP 404.
+odata_remember_configured_environments();
 if (odata_mimir_enabled()) {
-    if (!isset($environment) || !is_string($environment) || trim($environment) === '') {
+    if (odata_configured_environments() === []) {
         $environment = 'mimir';
     }
     if (!isset($auth) || !is_array($auth)) {
@@ -2701,4 +2761,4 @@ if (odata_is_direct_request() && $odataAction === 'cache_delete') {
 }
 if (odata_is_direct_request() && $odataAction === 'cache_clear') {
     odata_send_cache_clear_json();
-}
+}

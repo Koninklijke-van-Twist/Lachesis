@@ -68,28 +68,39 @@ function auth_mimir_bc_optional(): bool
  */
 function auth_get_active_environments(): array
 {
-    global $auth_list, $environment;
+    global $auth_list;
 
-    $configured = [];
-    if (isset($environment)) {
-        $configured = auth_normalize_environment_list($environment);
+    auth_ensure_odata_loaded();
+    if (function_exists('odata_configured_environments')) {
+        $configured = odata_configured_environments();
+    } else {
+        $configured = array_values(array_filter(
+            auth_normalize_environment_list($GLOBALS['environment'] ?? null),
+            static function (string $item): bool {
+                return strcasecmp($item, 'mimir') !== 0;
+            }
+        ));
     }
 
-    $known = is_array($auth_list ?? null) ? array_keys($auth_list) : [];
-    $unfiltered = $configured;
+    // Nooit terugvallen op de eerste $auth_list-sleutel: die lijst bevat ook
+    // test-environments. Alleen $environment / $primaryEnvironment tellen.
     if ($configured !== []) {
-        $knownMap = array_fill_keys($known, true);
-        $configured = array_values(array_filter($configured, static function (string $item) use ($knownMap): bool {
-            return isset($knownMap[$item]);
-        }));
-    }
+        $known = is_array($auth_list ?? null) ? array_keys($auth_list) : [];
+        if ($known === []) {
+            return $configured;
+        }
+        $filtered = [];
+        foreach ($configured as $item) {
+            foreach ($known as $key) {
+                if (strcasecmp((string) $key, $item) === 0) {
+                    $filtered[] = (string) $key;
+                    break;
+                }
+            }
+        }
 
-    if ($configured === [] && $known !== []) {
-        return [(string) $known[0]];
-    }
-
-    if ($configured !== []) {
-        return $configured;
+        // Geen match: laat de auth-lookup expliciet falen i.p.v. een andere environment te kiezen.
+        return $filtered !== [] ? $filtered : $configured;
     }
 
     // Geen lokale BC-config: bij een werkende Mímir environments afleiden uit companies.php.
@@ -120,15 +131,7 @@ function auth_get_active_environments(): array
         }
     }
 
-    if ($known === []) {
-        foreach ($unfiltered as $candidate) {
-            if (strcasecmp($candidate, 'mimir') !== 0) {
-                return [$candidate];
-            }
-        }
-    }
-
-    return $configured;
+    return [];
 }
 
 /**
@@ -210,11 +213,9 @@ function auth_get_auth_for_environment(string $environment): array
     }
 
     $listEmpty = $list === [];
-    $primary = $GLOBALS['environment'] ?? null;
-    $primaryName = is_string($primary) ? trim($primary) : '';
-    $matchesPrimary = $primaryName !== ''
-        && strcasecmp($primaryName, 'mimir') !== 0
-        && strcasecmp($primaryName, $environmentKey) === 0;
+    auth_ensure_odata_loaded();
+    $primaryName = function_exists('odata_bc_environment') ? (string) (odata_bc_environment() ?? '') : '';
+    $matchesPrimary = $primaryName !== '' && strcasecmp($primaryName, $environmentKey) === 0;
     if ($listEmpty || $matchesPrimary) {
         $generic = auth_generic_bc_auth();
         if ($generic !== []) {
@@ -671,6 +672,11 @@ function auth_set_current_company_context(?string $company, int $ttlSeconds = 30
 
     if (!array_key_exists('lachesis_original_auth', $GLOBALS) && isset($auth) && is_array($auth) && $auth !== []) {
         $GLOBALS['lachesis_original_auth'] = $auth;
+    }
+    // $environment wordt hieronder een string per bedrijf; bewaar de geconfigureerde lijst.
+    auth_ensure_odata_loaded();
+    if (function_exists('odata_remember_configured_environments')) {
+        odata_remember_configured_environments();
     }
 
     $companyName = trim((string) $company);
