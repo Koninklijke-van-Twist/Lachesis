@@ -2701,4 +2701,4 @@ if (odata_is_direct_request() && $odataAction === 'cache_delete') {
 }
 if (odata_is_direct_request() && $odataAction === 'cache_clear') {
     odata_send_cache_clear_json();
-}
+}
