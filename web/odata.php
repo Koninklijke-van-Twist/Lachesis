@@ -619,8 +619,18 @@ function odata_error_body_summary($raw): string
         return '(lege body)';
     }
     $text = preg_replace('/\s+/', ' ', $text) ?? $text;
-    if (strlen($text) > LACHESIS_ODATA_ERROR_BODY_LIMIT) {
-        $text = substr($text, 0, LACHESIS_ODATA_ERROR_BODY_LIMIT) . '…';
+    $limit = LACHESIS_ODATA_ERROR_BODY_LIMIT;
+    if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+        if (mb_strlen($text, 'UTF-8') > $limit) {
+            $text = mb_substr($text, 0, $limit, 'UTF-8') . '…';
+        }
+    } elseif (strlen($text) > $limit) {
+        // Zonder mbstring: knip op tekens (niet bytes) zodat de melding geldige UTF-8 blijft.
+        if (preg_match('/^.{0,' . $limit . '}/us', $text, $match) === 1) {
+            $text = $match[0] . '…';
+        } else {
+            $text = substr($text, 0, $limit) . '…';
+        }
     }
 
     return $text;
@@ -1486,7 +1496,7 @@ function odata_get_json(string $url, array $auth): array
     curl_close($ch);
 
     if ($code < 200 || $code >= 300) {
-        throw new Exception('HTTP ' . $code . ' from OData (GET ' . $url . '): ' . odata_error_body_summary($raw));
+        throw new Exception(odata_redact_secrets('HTTP ' . $code . ' from OData (GET ' . $url . '): ' . odata_error_body_summary($raw)));
     }
 
     $json = json_decode($raw, true);

@@ -51,6 +51,18 @@ if (strlen($long) > LACHESIS_ODATA_ERROR_BODY_LIMIT + 4) {
     fail('lange body hoort afgekapt te worden');
 }
 
+// Afkappen op tekens: geldige UTF-8, ook als de grens midden in een multibyte-teken valt.
+$utf = odata_error_body_summary(str_repeat('é', LACHESIS_ODATA_ERROR_BODY_LIMIT + 50));
+if (preg_match('//u', $utf) !== 1) {
+    fail('afgekapte body is geen geldige UTF-8');
+}
+if ((int) preg_match_all('/./us', $utf) !== LACHESIS_ODATA_ERROR_BODY_LIMIT + 1) {
+    fail('afgekapte body hoort ' . LACHESIS_ODATA_ERROR_BODY_LIMIT . ' tekens plus … te zijn');
+}
+if (!str_contains(odata_redact_secrets('pass=bc-secret key=mimir_test_key_should_not_leak'), '[redacted]')) {
+    fail('odata_redact_secrets hoort secrets te vervangen');
+}
+
 // Fallback na Mímir-fout: directe fout bevat URL + Mímir-oorzaak, zonder secrets.
 odata_mimir_circuit_reset();
 $url = "https://bc.example:7148/kvtmdlive_aad/ODataV4/Company('KVT%20Gas')/SalesInvoiceSubform";
