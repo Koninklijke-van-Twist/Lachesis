@@ -564,7 +564,9 @@ function voortgang_odata_get_json(string $url, array $auth): array
     curl_close($ch);
 
     if ($code < 200 || $code >= 300) {
-        throw new RuntimeException('HTTP ' . $code . ' from OData: ' . $raw);
+        $body = function_exists('odata_error_body_summary') ? odata_error_body_summary($raw) : (string) $raw;
+        $message = 'HTTP ' . $code . ' from OData (GET ' . $url . '): ' . $body;
+        throw new RuntimeException(function_exists('odata_redact_secrets') ? odata_redact_secrets($message) : $message);
     }
 
     $json = json_decode($raw, true);

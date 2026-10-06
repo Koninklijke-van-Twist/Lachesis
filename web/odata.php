@@ -48,6 +48,12 @@ const LACHESIS_HOURLY_MAX_AGE = 1800;
 /** Mímir max_age for UI / on-demand / contract refresh (bestaande bc_fetch_rows-default). */
 const LACHESIS_ODATA_TTL = 3600;
 
+/** Mímir-requesttimeout (s) voor nightly.php, ongeacht SAPI (zelfde als CLI). */
+const LACHESIS_NIGHTLY_MIMIR_TIMEOUT = 600;
+
+/** Maximaal aantal tekens van een OData-foutbody in een foutmelding. */
+const LACHESIS_ODATA_ERROR_BODY_LIMIT = 500;
+
 /**
  * BC laat @odata.nextLink weg zodra $top gehaald is. Mímir stuurde dat plafond
  * als 2000; een antwoord van exact deze grootte zonder nextLink is daarom
@@ -132,8 +138,31 @@ function odata_mimir_timeout_seconds_for_sapi(string $sapi): int
     return strtolower($sapi) === 'cli' ? 600 : 90;
 }
 
+/**
+ * Nightly.php zet een eigen Mímir-timeout: onder Apache is de web-timeout 90s, en
+ * een koude Mímir-refresh van AppWerkorders (KvT ~7000 rijen) duurt langer. Dat liet
+ * het circuit na 90s openklappen, waarna de hele nightly op het directe BC-pad liep.
+ */
+function odata_mimir_timeout_override(): int
+{
+    $override = $GLOBALS['lachesis_mimir_timeout_override'] ?? null;
+    if (is_int($override) && $override > 0) {
+        return $override;
+    }
+    if (is_string($override) && ctype_digit($override) && (int) $override > 0) {
+        return (int) $override;
+    }
+
+    return 0;
+}
+
 function odata_mimir_timeout_seconds(): int
 {
+    $override = odata_mimir_timeout_override();
+    if ($override > 0) {
+        return $override;
+    }
+
     return odata_mimir_timeout_seconds_for_sapi(PHP_SAPI);
 }
 
@@ -178,27 +207,100 @@ function odata_bc_base_url(): ?string
     return null;
 }
 
+/**
+ * Environmentnamen uit een auth.php-waarde: string ("a, b") of array. Lege
+ * waarden en de Mímir-placeholder vallen weg, dubbele namen ook.
+ *
+ * @return list<string>
+ */
+function odata_environment_names($value): array
+{
+    $items = [];
+    if (is_array($value)) {
+        $items = $value;
+    } elseif (is_string($value)) {
+        $items = preg_split('/[\s,;]+/', $value) ?: [];
+    }
+
+    $names = [];
+    $seen = [];
+    foreach ($items as $item) {
+        if (!is_scalar($item)) {
+            continue;
+        }
+        $name = trim((string) $item);
+        if ($name === '' || strcasecmp($name, 'mimir') === 0) {
+            continue;
+        }
+        $key = strtolower($name);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $names[] = $name;
+    }
+
+    return $names;
+}
+
+/**
+ * Bewaart $environment zoals auth.php hem zette, voordat een company-context of de
+ * Mímir-placeholder hem overschrijft.
+ */
+function odata_remember_configured_environments(): void
+{
+    if (array_key_exists('lachesis_configured_environment', $GLOBALS)) {
+        return;
+    }
+    $names = odata_environment_names($GLOBALS['environment'] ?? null);
+    if ($names === []) {
+        $names = odata_environment_names($GLOBALS['primaryEnvironment'] ?? null);
+    }
+    if ($names !== []) {
+        $GLOBALS['lachesis_configured_environment'] = $names;
+    }
+}
+
+/**
+ * Actieve environments uit auth.php: $environment (string of array, zoals
+ * oorspronkelijk geconfigureerd), anders $primaryEnvironment. Nooit de eerste
+ * sleutel van $auth_list: die lijst bevat ook test-environments (kvtfat_aad, …).
+ *
+ * @return list<string>
+ */
+function odata_configured_environments(): array
+{
+    $sources = [
+        $GLOBALS['lachesis_configured_environment'] ?? null,
+        $GLOBALS['environment'] ?? null,
+        $GLOBALS['primaryEnvironment'] ?? null,
+    ];
+    foreach ($sources as $value) {
+        $names = odata_environment_names($value);
+        if ($names !== []) {
+            return $names;
+        }
+    }
+
+    return [];
+}
+
+/**
+ * Huidige BC-environment: een door de company-context gezette string, anders de
+ * eerste geconfigureerde environment ($environment[0] / $primaryEnvironment).
+ */
 function odata_bc_environment(): ?string
 {
-    global $environment, $auth_list;
-    if (isset($environment) && is_string($environment)) {
-        $env = trim($environment);
-        if ($env !== '' && strcasecmp($env, 'mimir') !== 0) {
-            return $env;
+    $current = $GLOBALS['environment'] ?? null;
+    if (is_string($current)) {
+        $names = odata_environment_names($current);
+        if (count($names) === 1) {
+            return $names[0];
         }
     }
-    if (isset($auth_list) && is_array($auth_list)) {
-        foreach ($auth_list as $key => $entry) {
-            $candidate = trim((string) $key);
-            if ($candidate === '' || strcasecmp($candidate, 'mimir') === 0) {
-                continue;
-            }
-            if (odata_auth_is_usable($entry)) {
-                return $candidate;
-            }
-        }
-    }
-    return null;
+    $configured = odata_configured_environments();
+
+    return $configured[0] ?? null;
 }
 
 function odata_bc_global_is_configured(string $name): bool
@@ -338,9 +440,8 @@ function odata_bc_auth_for_named_environment(string $env, array $passed = []): ?
         }
     }
     $listEmpty = !isset($auth_list) || !is_array($auth_list) || $auth_list === [];
-    $primary = $GLOBALS['environment'] ?? null;
-    $primaryName = is_string($primary) ? trim($primary) : '';
-    $matchesPrimary = $primaryName !== '' && strcasecmp($primaryName, 'mimir') !== 0 && strcasecmp($primaryName, $env) === 0;
+    $primaryName = (string) (odata_bc_environment() ?? '');
+    $matchesPrimary = $primaryName !== '' && strcasecmp($primaryName, $env) === 0;
     if (!$listEmpty && !$matchesPrimary) {
         return null;
     }
@@ -440,24 +541,8 @@ function odata_bc_environment_list(?string $environmentFilter = null): array
     if ($filter !== '' && strcasecmp($filter, 'mimir') !== 0) {
         return [$filter];
     }
-    $envs = [];
-    global $auth_list;
-    if (isset($auth_list) && is_array($auth_list)) {
-        foreach ($auth_list as $key => $entry) {
-            $env = trim((string) $key);
-            if ($env === '' || strcasecmp($env, 'mimir') === 0 || !odata_auth_is_usable($entry)) {
-                continue;
-            }
-            $envs[] = $env;
-        }
-    }
-    if ($envs === []) {
-        $env = odata_bc_environment();
-        if ($env !== null) {
-            $envs[] = $env;
-        }
-    }
-    return $envs;
+    // Alleen de geconfigureerde environments, niet elke sleutel van $auth_list.
+    return odata_configured_environments();
 }
 
 function odata_bc_credentials_configured(): bool
@@ -469,9 +554,11 @@ function odata_bc_credentials_configured(): bool
     return odata_bc_auth_for_fallback([]) !== null;
 }
 
-function odata_mimir_log_fallback(Throwable $exception): void
+/**
+ * Haalt Mímir-sleutel, BC-wachtwoorden en Bearer-tokens uit een melding.
+ */
+function odata_redact_secrets(string $message): string
 {
-    $message = $exception->getMessage();
     $redactions = [];
     $apiKey = odata_mimir_api_key();
     if ($apiKey !== '') {
@@ -488,6 +575,10 @@ function odata_mimir_log_fallback(Throwable $exception): void
             }
         }
     }
+    $saved = $GLOBALS['lachesis_original_auth'] ?? null;
+    if (is_array($saved) && isset($saved['pass']) && is_string($saved['pass']) && $saved['pass'] !== '') {
+        $redactions[] = $saved['pass'];
+    }
     foreach ($redactions as $secret) {
         $message = str_replace($secret, '[redacted]', $message);
     }
@@ -495,7 +586,54 @@ function odata_mimir_log_fallback(Throwable $exception): void
     if (is_string($sanitized)) {
         $message = $sanitized;
     }
-    error_log('[Lachesis] Mímir failed, falling back to direct OData: ' . $message);
+    return $message;
+}
+
+function odata_mimir_log_fallback(Throwable $exception): void
+{
+    error_log('[Lachesis] Mímir failed, falling back to direct OData: ' . odata_redact_secrets($exception->getMessage()));
+}
+
+/**
+ * Foutmelding van het directe BC-pad, aangevuld met de Mímir-fout die de fallback
+ * veroorzaakte. Zonder die context ziet nightly alleen "HTTP 404 from OData".
+ */
+function odata_fallback_exception(Throwable $direct, ?Throwable $mimir): RuntimeException
+{
+    $message = odata_redact_secrets($direct->getMessage());
+    $marker = '[directe BC-fallback na Mímir-fout:';
+    if ($mimir instanceof Throwable && $mimir !== $direct && !str_contains($message, $marker)) {
+        $message .= ' ' . $marker . ' ' . odata_redact_secrets($mimir->getMessage()) . ']';
+    }
+
+    return new RuntimeException($message, (int) $direct->getCode(), $direct);
+}
+
+/**
+ * Korte, leesbare samenvatting van een OData-foutbody voor in een exception.
+ */
+function odata_error_body_summary($raw): string
+{
+    $text = trim(is_string($raw) ? $raw : '');
+    if ($text === '') {
+        return '(lege body)';
+    }
+    $text = preg_replace('/\s+/', ' ', $text) ?? $text;
+    $limit = LACHESIS_ODATA_ERROR_BODY_LIMIT;
+    if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+        if (mb_strlen($text, 'UTF-8') > $limit) {
+            $text = mb_substr($text, 0, $limit, 'UTF-8') . '…';
+        }
+    } elseif (strlen($text) > $limit) {
+        // Zonder mbstring: knip op tekens (niet bytes) zodat de melding geldige UTF-8 blijft.
+        if (preg_match('/^.{0,' . $limit . '}/us', $text, $match) === 1) {
+            $text = $match[0] . '…';
+        } else {
+            $text = substr($text, 0, $limit) . '…';
+        }
+    }
+
+    return $text;
 }
 
 /**
@@ -514,7 +652,11 @@ function odata_mimir_or_direct(callable $viaMimir, callable $viaDirect)
             }
             throw new Exception('Mímir eerder mislukt.');
         }
-        return $viaDirect();
+        try {
+            return $viaDirect();
+        } catch (Throwable $direct) {
+            throw odata_fallback_exception($direct, $original);
+        }
     }
 
     try {
@@ -528,7 +670,11 @@ function odata_mimir_or_direct(callable $viaMimir, callable $viaDirect)
             throw $exception;
         }
         odata_mimir_log_fallback($exception);
-        return $viaDirect();
+        try {
+            return $viaDirect();
+        } catch (Throwable $direct) {
+            throw odata_fallback_exception($direct, $exception);
+        }
     }
 }
 
@@ -1220,8 +1366,12 @@ function odata_mimir_fetch_all(string $url, int $ttlSeconds): array
 // Placeholders alleen als BC-globals ontbreken. Echte $baseUrl / $environment / $auth
 // blijven staan zodat de directe fallback ze kan gebruiken. Zonder die credentials
 // gooit de fallback de oorspronkelijke Mímir-fout opnieuw.
+// Een $environment-array (gesplitste credentials, bijv. ['kvtmdlive_aad', 'kvtgermanylive_aad'])
+// is een echte config en blijft staan. Eerder werd die hier 'mimir', waarna de
+// directe fallback de eerste $auth_list-sleutel (kvtfat_aad) koos: HTTP 404.
+odata_remember_configured_environments();
 if (odata_mimir_enabled()) {
-    if (!isset($environment) || !is_string($environment) || trim($environment) === '') {
+    if (odata_configured_environments() === []) {
         $environment = 'mimir';
     }
     if (!isset($auth) || !is_array($auth)) {
@@ -1346,7 +1496,7 @@ function odata_get_json(string $url, array $auth): array
     curl_close($ch);
 
     if ($code < 200 || $code >= 300) {
-        throw new Exception("HTTP $code from OData: $raw");
+        throw new Exception(odata_redact_secrets('HTTP ' . $code . ' from OData (GET ' . $url . '): ' . odata_error_body_summary($raw)));
     }
 
     $json = json_decode($raw, true);
