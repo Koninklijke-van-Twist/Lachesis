@@ -31,6 +31,39 @@ function voortgang_nightly_companies(string $requestedCompany): array
     return VOORTGANG_COMPANIES;
 }
 
+/**
+ * Company→environment uit Mímir companies.php laden zolang Mímir gezond is.
+ * Valt Mímir later in de run uit, dan bouwt het directe BC-pad zijn URL met
+ * dezelfde environment per bedrijf (gesplitste $auth_list) in plaats van een
+ * eigen discovery over de lokale environments.
+ */
+function voortgang_nightly_prime_company_environments(): void
+{
+    if (!function_exists('odata_mimir_enabled') || !odata_mimir_enabled() || !function_exists('auth_get_company_environment_map')) {
+        return;
+    }
+    if (function_exists('odata_mimir_circuit_open') && odata_mimir_circuit_open()) {
+        return;
+    }
+
+    try {
+        auth_get_company_environment_map(300, true);
+    } catch (Throwable $ignored) {
+        // Geen map: het directe pad doet zo nodig zijn eigen discovery.
+    }
+}
+
+/**
+ * Elk bedrijf begint met een dicht Mímir-circuit: een Mímir-fout bij het ene
+ * bedrijf mag de andere niet naar het directe BC-pad dwingen.
+ */
+function voortgang_nightly_reset_mimir_circuit(): void
+{
+    if (function_exists('odata_mimir_circuit_reset')) {
+        odata_mimir_circuit_reset();
+    }
+}
+
 function voortgang_nightly_send_json(array $payload, int $status = 200): never
 {
     http_response_code($status);
@@ -47,6 +80,9 @@ function voortgang_nightly_send_json(array $payload, int $status = 200): never
 $startedAt = time();
 // Nightly Mímir max_age = 4h (LACHESIS_NIGHTLY_MAX_AGE). UI/on-demand keeps LACHESIS_ODATA_TTL.
 $GLOBALS['lachesis_odata_max_age'] = defined('LACHESIS_NIGHTLY_MAX_AGE') ? LACHESIS_NIGHTLY_MAX_AGE : 14400;
+// Mímir-timeout los van de SAPI: de web-default (90s) is te kort voor een koude KvT-refresh.
+$GLOBALS['lachesis_mimir_timeout_override'] = defined('LACHESIS_NIGHTLY_MIMIR_TIMEOUT') ? LACHESIS_NIGHTLY_MIMIR_TIMEOUT : 600;
+voortgang_nightly_prime_company_environments();
 $requestedCompany = trim((string) ($_GET['company'] ?? ''));
 $companies = voortgang_nightly_companies($requestedCompany);
 $results = [];
@@ -57,6 +93,8 @@ foreach ($companies as $company) {
     if ($companyName === '') {
         continue;
     }
+
+    voortgang_nightly_reset_mimir_circuit();
 
     try {
         $meta = voortgang_refresh_company($companyName);
