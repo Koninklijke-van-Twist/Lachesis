@@ -35,6 +35,11 @@ function voortgang_cache_base_dir(): string
     if (!is_dir($dir)) {
         @mkdir($dir, 0777, true);
     }
+    static $protected = false;
+    if (!$protected) {
+        $protected = true;
+        voortgang_protect_cache_dirs();
+    }
 
     return $dir;
 }
@@ -127,23 +132,40 @@ function voortgang_cleanup_stale_locks(?int $maxAge = null): int
  * Zet directory listing dicht in web/cache. De FTP-deploy sluit cache/ en .htaccess uit,
  * dus dit gebeurt runtime: lege index.html per cachemap en (alleen als hij nog niet
  * bestaat) web/cache/.htaccess met Options -Indexes. Bestaande .htaccess blijft ongemoeid.
+ * Draait één keer per request (ook via voortgang_cache_base_dir()); mislukte writes worden
+ * gelogd en teruggegeven zodat nightly.php ze rapporteert.
  */
-function voortgang_protect_cache_dirs(): void
+function voortgang_protect_cache_dirs(): array
 {
+    static $errors = null;
+    if ($errors !== null) {
+        return $errors;
+    }
+    $errors = [];
     $root = __DIR__ . DIRECTORY_SEPARATOR . 'cache';
     $dirs = [$root, $root . DIRECTORY_SEPARATOR . 'odata', $root . DIRECTORY_SEPARATOR . 'voortgang'];
     foreach (glob($root . DIRECTORY_SEPARATOR . 'voortgang' . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR) ?: [] as $d) {
         $dirs[] = $d;
     }
+    $targets = [];
     foreach ($dirs as $dir) {
         if (is_dir($dir) && !is_file($dir . DIRECTORY_SEPARATOR . 'index.html')) {
-            @file_put_contents($dir . DIRECTORY_SEPARATOR . 'index.html', '', LOCK_EX);
+            $targets[$dir . DIRECTORY_SEPARATOR . 'index.html'] = '';
         }
     }
     $htaccess = $root . DIRECTORY_SEPARATOR . '.htaccess';
     if (is_dir($root) && !file_exists($htaccess)) {
-        @file_put_contents($htaccess, "Options -Indexes\n", LOCK_EX);
+        $targets[$htaccess] = "Options -Indexes\n";
     }
+    foreach ($targets as $path => $content) {
+        if (file_put_contents($path, $content, LOCK_EX) === false) {
+            $message = 'Cachebeveiliging kon niet worden geschreven: ' . basename(dirname($path)) . '/' . basename($path);
+            $errors[] = $message;
+            error_log('Lachesis: ' . $message);
+        }
+    }
+
+    return $errors;
 }
 
 function voortgang_company_slug(string $company): string

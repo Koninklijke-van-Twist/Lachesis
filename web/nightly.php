@@ -82,13 +82,13 @@ $startedAt = time();
 $GLOBALS['lachesis_odata_max_age'] = defined('LACHESIS_NIGHTLY_MAX_AGE') ? LACHESIS_NIGHTLY_MAX_AGE : 14400;
 // Mímir-timeout los van de SAPI: de web-default (90s) is te kort voor een koude KvT-refresh.
 $GLOBALS['lachesis_mimir_timeout_override'] = defined('LACHESIS_NIGHTLY_MIMIR_TIMEOUT') ? LACHESIS_NIGHTLY_MIMIR_TIMEOUT : 600;
-voortgang_protect_cache_dirs();
 $staleLocksRemoved = voortgang_cleanup_stale_locks();
+$cacheProtectionErrors = voortgang_protect_cache_dirs();
 voortgang_nightly_prime_company_environments();
 $requestedCompany = trim((string) ($_GET['company'] ?? ''));
 $companies = voortgang_nightly_companies($requestedCompany);
 $results = [];
-$ok = true;
+$ok = $cacheProtectionErrors === [];
 
 foreach ($companies as $company) {
     $companyName = trim((string) $company);
@@ -126,5 +126,6 @@ voortgang_nightly_send_json([
     'ran_at' => $startedAt,
     'duration_seconds' => time() - $startedAt,
     'stale_locks_removed' => $staleLocksRemoved,
+    'cache_protection_errors' => $cacheProtectionErrors,
     'companies' => $results,
 ], $ok && $results !== [] ? 200 : 500);
