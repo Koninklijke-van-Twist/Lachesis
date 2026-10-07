@@ -35,8 +35,137 @@ function voortgang_cache_base_dir(): string
     if (!is_dir($dir)) {
         @mkdir($dir, 0777, true);
     }
+    static $protected = false;
+    if (!$protected) {
+        $protected = true;
+        voortgang_protect_cache_dirs();
+    }
 
     return $dir;
+}
+
+/** Locks waarvan het bestand langer dan dit (s) niet is aangeraakt gelden als verlopen. */
+const VOORTGANG_LOCK_MAX_AGE = 7200;
+
+/**
+ * Opent en flockt een lockbestand. Na het verkrijgen controleren we dat het pad nog
+ * naar hetzelfde inode wijst; is het intussen opgeruimd, dan opnieuw proberen. Zo kan
+ * stale-lock-cleanup (unlink onder flock) nooit twee houders van "dezelfde" lock geven.
+ * Bij succes wordt de mtime vernieuwd, zodat een actieve lock nooit verlopen lijkt.
+ *
+ * @return array{0: resource, 1: bool} [handle, moest wachten]
+ */
+function voortgang_lock_acquire(string $path, bool $tryNonBlockingFirst = false): array
+{
+    $waited = false;
+    for ($attempt = 0; $attempt < 10; $attempt++) {
+        $lock = @fopen($path, 'c+');
+        if ($lock === false) {
+            throw new RuntimeException('Lock kon niet worden geopend.');
+        }
+        $got = false;
+        if ($tryNonBlockingFirst && flock($lock, LOCK_EX | LOCK_NB)) {
+            $got = true;
+        } elseif (flock($lock, LOCK_EX)) {
+            $waited = $waited || $tryNonBlockingFirst;
+            $got = true;
+        }
+        if (!$got) {
+            fclose($lock);
+            throw new RuntimeException('Lock kon niet worden verkregen.');
+        }
+        clearstatcache(true, $path);
+        $fdStat = fstat($lock);
+        $pathStat = @stat($path);
+        if ($fdStat !== false && $pathStat !== false && $fdStat['ino'] === $pathStat['ino'] && $fdStat['dev'] === $pathStat['dev']) {
+            @touch($path);
+            return [$lock, $waited];
+        }
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+    throw new RuntimeException('Lock bleef wisselen; opgegeven.');
+}
+
+function voortgang_lock_release($lock): void
+{
+    flock($lock, LOCK_UN);
+    fclose($lock);
+}
+
+/**
+ * Verwijdert *.lock-bestanden ouder dan VOORTGANG_LOCK_MAX_AGE, maar alleen als niemand
+ * ze vasthoudt (flock LOCK_NB lukt). Geeft het aantal verwijderde locks terug.
+ */
+function voortgang_cleanup_stale_locks(?int $maxAge = null): int
+{
+    $maxAge = $maxAge ?? VOORTGANG_LOCK_MAX_AGE;
+    $removed = 0;
+    $now = time();
+    foreach (glob(voortgang_cache_base_dir() . DIRECTORY_SEPARATOR . '*.lock') ?: [] as $path) {
+        clearstatcache(true, $path);
+        $mtime = @filemtime($path);
+        if ($mtime === false || ($now - $mtime) < $maxAge) {
+            continue;
+        }
+        $lock = @fopen($path, 'r+');
+        if ($lock === false) {
+            continue;
+        }
+        if (flock($lock, LOCK_EX | LOCK_NB)) {
+            clearstatcache(true, $path);
+            $fdStat = fstat($lock);
+            $pathStat = @stat($path);
+            if ($fdStat !== false && $pathStat !== false && $fdStat['ino'] === $pathStat['ino']
+                && ($now - (int) $pathStat['mtime']) >= $maxAge && @unlink($path)) {
+                $removed++;
+            }
+            flock($lock, LOCK_UN);
+        }
+        fclose($lock);
+    }
+
+    return $removed;
+}
+
+/**
+ * Zet directory listing dicht in web/cache. De FTP-deploy sluit cache/ en .htaccess uit,
+ * dus dit gebeurt runtime: lege index.html per cachemap en (alleen als hij nog niet
+ * bestaat) web/cache/.htaccess met Options -Indexes. Bestaande .htaccess blijft ongemoeid.
+ * Draait één keer per request (ook via voortgang_cache_base_dir()); mislukte writes worden
+ * gelogd en teruggegeven zodat nightly.php ze rapporteert.
+ */
+function voortgang_protect_cache_dirs(): array
+{
+    static $errors = null;
+    if ($errors !== null) {
+        return $errors;
+    }
+    $errors = [];
+    $root = __DIR__ . DIRECTORY_SEPARATOR . 'cache';
+    $dirs = [$root, $root . DIRECTORY_SEPARATOR . 'odata', $root . DIRECTORY_SEPARATOR . 'voortgang'];
+    foreach (glob($root . DIRECTORY_SEPARATOR . 'voortgang' . DIRECTORY_SEPARATOR . '*', GLOB_ONLYDIR) ?: [] as $d) {
+        $dirs[] = $d;
+    }
+    $targets = [];
+    foreach ($dirs as $dir) {
+        if (is_dir($dir) && !is_file($dir . DIRECTORY_SEPARATOR . 'index.html')) {
+            $targets[$dir . DIRECTORY_SEPARATOR . 'index.html'] = '';
+        }
+    }
+    $htaccess = $root . DIRECTORY_SEPARATOR . '.htaccess';
+    if (is_dir($root) && !file_exists($htaccess)) {
+        $targets[$htaccess] = "Options -Indexes\n";
+    }
+    foreach ($targets as $path => $content) {
+        if (file_put_contents($path, $content, LOCK_EX) === false) {
+            $message = 'Cachebeveiliging kon niet worden geschreven: ' . basename(dirname($path)) . '/' . basename($path);
+            $errors[] = $message;
+            error_log('Lachesis: ' . $message);
+        }
+    }
+
+    return $errors;
 }
 
 function voortgang_company_slug(string $company): string
@@ -1695,16 +1824,9 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
  */
 function voortgang_upsert_contract_row_in_cache(string $company, string $contractNo, ?array $row): void
 {
-    $lockPath = voortgang_rows_write_lock_path($company);
-    $lock = fopen($lockPath, 'c+');
-    if ($lock === false) {
-        throw new RuntimeException('Cache write-lock kon niet worden geopend.');
-    }
+    [$lock] = voortgang_lock_acquire(voortgang_rows_write_lock_path($company));
 
     try {
-        if (!flock($lock, LOCK_EX)) {
-            throw new RuntimeException('Cache write-lock kon niet worden verkregen.');
-        }
 
         $files = voortgang_company_cache_files($company);
         $list = voortgang_read_company_rows($company);
@@ -1750,8 +1872,7 @@ function voortgang_upsert_contract_row_in_cache(string $company, string $contrac
         $meta['contract_count'] = count($next);
         voortgang_write_json_file($files['meta'], $meta);
     } finally {
-        flock($lock, LOCK_UN);
-        fclose($lock);
+        voortgang_lock_release($lock);
     }
 }
 
@@ -1821,21 +1942,10 @@ function voortgang_refresh_contract(string $company, string $contractNo): array
     }
 
     $paths = voortgang_refresh_job_paths($company, $contractNo);
-    $lock = fopen($paths['lock'], 'c+');
-    if ($lock === false) {
-        throw new RuntimeException('Refresh-lock kon niet worden geopend.');
-    }
-
     $requestStarted = time();
-    $waitedForLock = false;
+    [$lock, $waitedForLock] = voortgang_lock_acquire($paths['lock'], true);
 
     try {
-        if (!flock($lock, LOCK_EX | LOCK_NB)) {
-            $waitedForLock = true;
-            if (!flock($lock, LOCK_EX)) {
-                throw new RuntimeException('Refresh-lock kon niet worden verkregen.');
-            }
-        }
 
         if ($waitedForLock) {
             $status = voortgang_read_refresh_status($paths['status']);
@@ -1853,7 +1963,6 @@ function voortgang_refresh_contract(string $company, string $contractNo): array
 
         return voortgang_refresh_contract_as_leader($company, $contractNo, $paths['status']);
     } finally {
-        flock($lock, LOCK_UN);
-        fclose($lock);
+        voortgang_lock_release($lock);
     }
 }
