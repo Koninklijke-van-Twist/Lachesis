@@ -148,7 +148,7 @@ function voortgang_xlsx_workorder_export_row(string $contractNo, array $item): a
         (string) ($item['no'] ?? ''),
         (string) ($item['task_code'] ?? ''),
         (string) ($item['task_description'] ?? ''),
-        (string) ($item['status'] ?? ''),
+        voortgang_canonical_status((string) ($item['status'] ?? '')),
         (string) ($item['project_status'] ?? ''),
         (string) ($item['start_date'] ?? ''),
         round((float) ($item['proforma_amount'] ?? 0), 2),
