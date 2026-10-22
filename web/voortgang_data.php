@@ -289,6 +289,71 @@ function voortgang_parse_odata_date(mixed $value): string
     return $date;
 }
 
+/** Normaliseert een BC-optiewaarde: lowercase, underscores/spaties samengevoegd. */
+function voortgang_normalize_option_value(string $value): string
+{
+    $value = mb_strtolower(trim($value), 'UTF-8');
+    $value = str_replace('_', ' ', $value);
+
+    return trim((string) preg_replace('/\s+/u', ' ', $value));
+}
+
+/** Optiewaarde zonder nummerprefix, bv. '02 in progress' -> 'in progress'. */
+function voortgang_option_without_prefix(string $value): string
+{
+    return (string) preg_replace('/^\d+\s+/', '', voortgang_normalize_option_value($value));
+}
+
+/** True als een optiewaarde (NL/EN/DE, met of zonder nummerprefix) een van de aliassen is. */
+function voortgang_option_matches(string $value, array $candidates): bool
+{
+    $full = voortgang_normalize_option_value($value);
+    if ($full === '') {
+        return false;
+    }
+    $bare = voortgang_option_without_prefix($value);
+    foreach ($candidates as $candidate) {
+        $c = voortgang_normalize_option_value((string) $candidate);
+        if ($c === '') {
+            continue;
+        }
+        if ($c === $full || $c === $bare || voortgang_option_without_prefix((string) $candidate) === $bare) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/** Zet een werkorderstatus uit BC (NL/EN/DE) om naar de canonieke NL-sleutel; onbekend blijft ongewijzigd. */
+function voortgang_canonical_status(string $status): string
+{
+    $status = trim($status);
+    if ($status === '' || isset(VOORTGANG_STATUS_ALIASES[$status])) {
+        return $status;
+    }
+    foreach (VOORTGANG_STATUS_ALIASES as $canonical => $aliases) {
+        if (voortgang_option_matches($status, $aliases)) {
+            return $canonical;
+        }
+    }
+
+    return $status;
+}
+
+/** True als de Document_Type van een verkoopregel een factuur is (NL/EN/DE). */
+function voortgang_is_proforma_document_type(array $row): bool
+{
+    if (!array_key_exists('Document_Type', $row)) {
+        return true;
+    }
+
+    return voortgang_option_matches(
+        voortgang_scalar_string($row['Document_Type']),
+        array_merge([VOORTGANG_PROFORMA_DOCUMENT_TYPE], VOORTGANG_PROFORMA_DOCUMENT_TYPE_ALIASES)
+    );
+}
+
 function voortgang_empty_counts(): array
 {
     $counts = [];
@@ -316,7 +381,7 @@ function voortgang_normalize_workorder_item(array $item): array
 {
     return [
         'no' => voortgang_scalar_string($item['no'] ?? ''),
-        'status' => voortgang_scalar_string($item['status'] ?? ''),
+        'status' => voortgang_canonical_status(voortgang_scalar_string($item['status'] ?? '')),
         'task_code' => voortgang_scalar_string($item['task_code'] ?? ''),
         'task_description' => voortgang_scalar_string($item['task_description'] ?? ''),
         'project_no' => voortgang_scalar_string($item['project_no'] ?? ''),
@@ -393,7 +458,7 @@ function voortgang_aggregate_workorder_items(array $items): array
         }
 
         $total++;
-        $status = voortgang_scalar_string($item['status'] ?? '');
+        $status = voortgang_canonical_status(voortgang_scalar_string($item['status'] ?? ''));
         if (isset($counts[$status])) {
             $counts[$status]++;
         }
@@ -981,7 +1046,6 @@ function voortgang_fetch_proforma_map(string $company, ?array $workorderNos = nu
     }
 
     $map = [];
-    $docType = bc_escape_odata_string(VOORTGANG_PROFORMA_DOCUMENT_TYPE);
     $chunks = [null];
     if (is_array($workorderNos)) {
         $unique = [];
@@ -998,6 +1062,9 @@ function voortgang_fetch_proforma_map(string $company, ?array $workorderNos = nu
     }
 
     $accumulate = static function (array $row) use (&$map): bool {
+        if (!voortgang_is_proforma_document_type($row)) {
+            return false;
+        }
         $workorderNo = voortgang_scalar_string($row['Job_Task_No'] ?? '');
         if ($workorderNo === '') {
             return false;
@@ -1021,13 +1088,14 @@ function voortgang_fetch_proforma_map(string $company, ?array $workorderNos = nu
     };
 
     foreach ($chunks as $chunk) {
-        $filter = "Document_Type eq '" . $docType . "' and Job_Task_No ne ''";
+        // Document_Type niet in OData filteren: de optietekst is taalafhankelijk ('Factuur'/'Invoice'/'Rechnung').
+        $filter = "Job_Task_No ne ''";
         if (is_array($chunk)) {
             $woFilter = voortgang_odata_eq_or_filter('Job_Task_No', $chunk);
             if ($woFilter === '') {
                 continue;
             }
-            $filter = "Document_Type eq '" . $docType . "' and " . $woFilter;
+            $filter = $woFilter;
         }
 
         voortgang_paginate_entity(
@@ -1136,7 +1204,6 @@ function voortgang_fetch_proforma_amounts_by_document(string $company, array $do
     }
 
     $byDocument = [];
-    $docType = bc_escape_odata_string(VOORTGANG_PROFORMA_DOCUMENT_TYPE);
     foreach (array_chunk($documentNos, 40) as $chunk) {
         $docFilter = voortgang_odata_eq_or_filter('Document_No', $chunk);
         if ($docFilter === '') {
@@ -1148,9 +1215,12 @@ function voortgang_fetch_proforma_amounts_by_document(string $company, array $do
             VOORTGANG_PROFORMA_ENTITY,
             [
                 '$select' => VOORTGANG_PROFORMA_SELECT,
-                '$filter' => "Document_Type eq '" . $docType . "' and Job_Task_No ne '' and " . $docFilter,
+                '$filter' => "Job_Task_No ne '' and " . $docFilter,
             ],
             static function (array $row) use (&$byDocument): bool {
+                if (!voortgang_is_proforma_document_type($row)) {
+                    return false;
+                }
                 $documentNo = voortgang_scalar_string($row['Document_No'] ?? '');
                 $workorderNo = voortgang_scalar_string($row['Job_Task_No'] ?? '');
                 if ($documentNo === '' || $workorderNo === '') {
@@ -1206,7 +1276,7 @@ function voortgang_fetch_workorders_by_nos(string $company, array $workorderNos)
                 $map[$no] = [
                     'no' => $no,
                     'contract_no' => voortgang_scalar_string($row['Contract_No'] ?? ''),
-                    'status' => voortgang_scalar_string($row['Status'] ?? ''),
+                    'status' => voortgang_canonical_status(voortgang_scalar_string($row['Status'] ?? '')),
                 ];
 
                 return true;
@@ -1657,7 +1727,7 @@ function voortgang_status_workorders(array $row, string $status): array
             continue;
         }
         $no = voortgang_scalar_string($item['no'] ?? '');
-        $itemStatus = voortgang_scalar_string($item['status'] ?? '');
+        $itemStatus = voortgang_canonical_status(voortgang_scalar_string($item['status'] ?? ''));
         if ($no === '') {
             continue;
         }

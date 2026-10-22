@@ -29,8 +29,10 @@ const VOORTGANG_CONTRACT_MEMO_FIELDS = [
 ];
 const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,Invoice_Period,gBLOBMemoMgt_GetMemoText_Rec_x002C__Rec_FieldNo_Memo,KVT_Memo_Internal_Use_Only,KVT_Memo_Billing_Text,KVT_Memo_Invoice_Details,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
 const VOORTGANG_INSTRUCTION_PREVIEW_LINES = 3;
-const VOORTGANG_PROFORMA_SELECT = 'Job_Task_No,Line_Amount,Document_No';
+const VOORTGANG_PROFORMA_SELECT = 'Job_Task_No,Line_Amount,Document_No,Document_Type';
 const VOORTGANG_PROFORMA_DOCUMENT_TYPE = 'Factuur';
+/** Optietekst van Document_Type hangt af van de taal van de BC-gebruiker; filter daarom in PHP. */
+const VOORTGANG_PROFORMA_DOCUMENT_TYPE_ALIASES = ['Factuur', 'Invoice', 'Rechnung'];
 const VOORTGANG_PROJECTS_SELECT = 'No,Status';
 
 /** BC webclient-pagina's voor deep links. 11333028 = Werkorderkaart (job task), 43 = Verkoopfactuur. */
@@ -48,6 +50,23 @@ const VOORTGANG_STATUSES = [
     'Gefactureerd',
     'Geannuleerd',
     'Afgesloten',
+];
+
+/**
+ * Aliassen per canonieke (Nederlandse) status: BC levert de optietekst in de taal van de
+ * BC-gebruiker (NL/EN/DE), soms met nummerprefix ('02 IN PROGRESS'). De canonieke sleutel
+ * blijft het NL-label in weergave, tellingen en export.
+ */
+const VOORTGANG_STATUS_ALIASES = [
+    'Open' => ['Open', 'Offen'],
+    'Gepland' => ['Gepland', 'Planned', 'Geplant'],
+    'Onderhanden' => ['Onderhanden', 'In Progress', 'In Bearbeitung', 'In Arbeit'],
+    'Uitgevoerd' => ['Uitgevoerd', 'Completed', 'Executed', 'Done', 'Ausgeführt', 'Erledigt'],
+    'Ondertekend' => ['Ondertekend', 'Signed', 'Unterschrieben', 'Unterzeichnet'],
+    'Gecontroleerd' => ['Gecontroleerd', 'Checked', 'Controlled', 'Verified', 'Kontrolliert', 'Geprüft'],
+    'Gefactureerd' => ['Gefactureerd', 'Invoiced', 'Fakturiert', 'Berechnet'],
+    'Geannuleerd' => ['Geannuleerd', 'Cancelled', 'Canceled', 'Storniert', 'Annulliert'],
+    'Afgesloten' => ['Afgesloten', 'Closed', 'Geschlossen', 'Abgeschlossen'],
 ];
 
 /** Voortgang = (deze statussen) / totaal werkorders. */
