@@ -918,21 +918,107 @@ function voortgang_append_workorder_item(array &$rows, string $contractNo, array
     return true;
 }
 
-function voortgang_fetch_workorders_into_rows(string $company, array &$rows): array
-{
-    return voortgang_paginate_entity(
-        $company,
-        VOORTGANG_WORKORDERS_ENTITY,
-        [
-            '$select' => VOORTGANG_WORKORDERS_SELECT,
-            '$filter' => "Contract_No ne ''",
-        ],
-        static function (array $row) use (&$rows): bool {
-            $contractNo = voortgang_scalar_string($row['Contract_No'] ?? '');
+/** Aantal contractnummers per `Contract_No eq ... or ...`-filter op AppWerkorders. */
+const VOORTGANG_WORKORDER_CONTRACT_CHUNK = 40;
 
-            return voortgang_append_workorder_item($rows, $contractNo, $row);
+/**
+ * Werkorders per contract ophalen, in chunks van `Contract_No eq 'x' or ...`.
+ *
+ * Niet meer `Contract_No ne ''`: via de Mímir-tunnel (page 11333023) geeft dat sinds
+ * 22-10-2026 een lege set terug, en de hele tabel zonder filter loopt in Mímir op een
+ * 240s-timeout. Eq-filters op Contract_No werken wel en houden elke aanroep klein.
+ * Contract_No wordt daarnaast in PHP gecontroleerd.
+ *
+ * @param list<string> $contractNos
+ * @return array{kept:int, read:int, pages:int}
+ */
+function voortgang_fetch_workorders_into_rows(string $company, array &$rows, array $contractNos): array
+{
+    $totals = ['kept' => 0, 'read' => 0, 'pages' => 0];
+    $contractNos = voortgang_unique_nonempty_strings($contractNos);
+    $wanted = array_fill_keys($contractNos, true);
+
+    foreach (array_chunk($contractNos, VOORTGANG_WORKORDER_CONTRACT_CHUNK) as $chunk) {
+        $filter = voortgang_odata_eq_or_filter('Contract_No', $chunk);
+        if ($filter === '') {
+            continue;
+        }
+        $stats = voortgang_paginate_entity(
+            $company,
+            VOORTGANG_WORKORDERS_ENTITY,
+            [
+                '$select' => VOORTGANG_WORKORDERS_SELECT,
+                '$filter' => $filter,
+            ],
+            static function (array $row) use (&$rows, $wanted): bool {
+                $contractNo = voortgang_scalar_string($row['Contract_No'] ?? '');
+                if (!isset($wanted[$contractNo])) {
+                    return false;
+                }
+
+                return voortgang_append_workorder_item($rows, $contractNo, $row);
+            }
+        );
+        foreach ($totals as $key => $value) {
+            $totals[$key] = $value + (int) ($stats[$key] ?? 0);
+        }
+    }
+
+    return $totals;
+}
+
+/**
+ * Alle contractnummers van een bedrijf (lichte select).
+ *
+ * @return list<string>
+ */
+function voortgang_fetch_contract_nos(string $company): array
+{
+    $nos = [];
+    voortgang_paginate_entity(
+        $company,
+        VOORTGANG_CONTRACTS_ENTITY,
+        ['$select' => 'Contract_No'],
+        static function (array $row) use (&$nos): bool {
+            $no = voortgang_scalar_string($row['Contract_No'] ?? '');
+            if ($no === '') {
+                return false;
+            }
+            $nos[] = $no;
+
+            return true;
         }
     );
+
+    return voortgang_unique_nonempty_strings($nos);
+}
+
+/**
+ * Guard tegen een stil lege werkorder-fetch: contracten > 0 maar geen (gekoppelde)
+ * werkorders betekent vrijwel zeker een kapotte fetch. Gooi dan een fout zodat de
+ * bestaande cache blijft staan en nightly.php de run als niet-ok meldt.
+ *
+ * @param array<string, int> $workorderStats
+ * @param array<string, int> $contractStats
+ */
+function voortgang_assert_refresh_plausible(string $company, array $workorderStats, array $contractStats): void
+{
+    $contractRead = (int) ($contractStats['read'] ?? 0);
+    $workorderRead = (int) ($workorderStats['read'] ?? 0);
+    $workorderKept = (int) ($workorderStats['kept'] ?? 0);
+    if ($contractRead <= 0 || ($workorderRead > 0 && $workorderKept > 0)) {
+        return;
+    }
+
+    $message = sprintf(
+        'Verdachte refresh voor %s: %d contracten gelezen maar %d werkorders gelezen / %d met contract; bestaande cache niet overschreven.',
+        $company,
+        $contractRead,
+        $workorderRead,
+        $workorderKept
+    );
+    error_log('[lachesis] ' . $message);
+    throw new RuntimeException($message);
 }
 
 function voortgang_fetch_contracts_into_rows(string $company, array &$rows): array
@@ -1597,11 +1683,13 @@ function voortgang_refresh_company(string $company): array
 
     try {
         $rows = [];
-        $workorderStats = voortgang_fetch_workorders_into_rows($company, $rows);
+        $contractNos = voortgang_fetch_contract_nos($company);
+        $workorderStats = voortgang_fetch_workorders_into_rows($company, $rows, $contractNos);
         $proformaMap = voortgang_fetch_proforma_map($company);
         voortgang_apply_proforma_map_to_rows($rows, $proformaMap);
         voortgang_attach_project_statuses($company, $rows);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
+        voortgang_assert_refresh_plausible($company, $workorderStats, $contractStats);
         $finalRows = voortgang_finalize_rows($rows);
         $dateBounds = voortgang_workorder_date_bounds_from_rows($finalRows);
 
