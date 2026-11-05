@@ -784,6 +784,9 @@ function voortgang_mimir_cursor_field(string $entitySet): string
     if ($entitySet === VOORTGANG_CONTRACTS_ENTITY) {
         return 'Contract_No';
     }
+    if ($entitySet === VOORTGANG_JOB_LEDGER_ENTITY) {
+        return 'Entry_No';
+    }
 
     return '';
 }
@@ -1046,6 +1049,82 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
             return true;
         }
     );
+}
+
+/**
+ * Gefactureerd bedrag per werkorder uit verkoop-projectposten zónder LVS_Contract_No.
+ * Die posten zitten niet in KVT_Total_Revenue van het contract (bv. CTR2600010: factuur
+ * S526003959 op PRJ5260393 / WO2600397 zonder contractnummer).
+ *
+ * @param list<string>|null $workorderNos null = hele bedrijf
+ * @return array<string, float> werkorder => positief gefactureerd bedrag
+ */
+function voortgang_fetch_unlinked_revenue_map(string $company, ?array $workorderNos = null): array
+{
+    $chunks = [null];
+    if (is_array($workorderNos)) {
+        $chunks = array_chunk(voortgang_unique_nonempty_strings($workorderNos), 40);
+        if ($chunks === []) {
+            return [];
+        }
+    }
+
+    $map = [];
+    $accumulate = static function (array $row) use (&$map): bool {
+        if (!voortgang_option_matches(voortgang_scalar_string($row['Entry_Type'] ?? ''), VOORTGANG_JOB_LEDGER_SALE_TYPES)) {
+            return false;
+        }
+        $workorderNo = voortgang_scalar_string($row['Job_Task_No'] ?? '');
+        if ($workorderNo === '') {
+            return false;
+        }
+        // Verkoopposten zijn negatief in BC (net als KVT_Total_Revenue).
+        $map[$workorderNo] = ($map[$workorderNo] ?? 0.0) - voortgang_scalar_float($row['Line_Amount_LCY'] ?? 0);
+
+        return true;
+    };
+
+    foreach ($chunks as $chunk) {
+        $filter = "LVS_Contract_No eq '' and Line_Amount_LCY ne 0";
+        if (is_array($chunk)) {
+            $woFilter = voortgang_odata_eq_or_filter('Job_Task_No', $chunk);
+            if ($woFilter === '') {
+                continue;
+            }
+            $filter .= ' and (' . $woFilter . ')';
+        }
+        voortgang_paginate_entity(
+            $company,
+            VOORTGANG_JOB_LEDGER_ENTITY,
+            ['$select' => VOORTGANG_JOB_LEDGER_SELECT, '$filter' => $filter],
+            $accumulate
+        );
+    }
+
+    return $map;
+}
+
+/**
+ * Telt verkoopposten zonder contractkoppeling op de werkorders van een contract op bij total_revenue.
+ *
+ * @param array<string, float> $revenueMap
+ */
+function voortgang_apply_unlinked_revenue_to_rows(array &$rows, array $revenueMap): void
+{
+    foreach ($rows as &$row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $extra = 0.0;
+        foreach ((is_array($row['workorders'] ?? null) ? $row['workorders'] : []) as $item) {
+            $no = is_array($item) ? voortgang_scalar_string($item['no'] ?? '') : '';
+            if ($no !== '' && isset($revenueMap[$no])) {
+                $extra += (float) $revenueMap[$no];
+            }
+        }
+        $row['total_revenue'] = voortgang_scalar_float($row['total_revenue'] ?? 0) + $extra;
+    }
+    unset($row);
 }
 
 /**
@@ -1689,6 +1768,7 @@ function voortgang_refresh_company(string $company): array
         voortgang_apply_proforma_map_to_rows($rows, $proformaMap);
         voortgang_attach_project_statuses($company, $rows);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
+        voortgang_apply_unlinked_revenue_to_rows($rows, voortgang_fetch_unlinked_revenue_map($company));
         voortgang_assert_refresh_plausible($company, $workorderStats, $contractStats);
         $finalRows = voortgang_finalize_rows($rows);
         $dateBounds = voortgang_workorder_date_bounds_from_rows($finalRows);
@@ -1971,6 +2051,8 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
             return true;
         }
     );
+
+    voortgang_apply_unlinked_revenue_to_rows($rows, voortgang_fetch_unlinked_revenue_map($company, $workorderNos));
 
     $final = voortgang_finalize_rows($rows);
 

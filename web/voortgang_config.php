@@ -18,6 +18,14 @@ const VOORTGANG_WORKORDERS_ENTITY = 'AppWerkorders';
 const VOORTGANG_CONTRACTS_ENTITY = 'Onderhoudscontract';
 const VOORTGANG_PROFORMA_ENTITY = 'SalesInvoiceSubform';
 const VOORTGANG_PROJECTS_ENTITY = 'Projecten';
+/**
+ * Projectposten: KVT_Total_Revenue telt alleen verkoopposten mét LVS_Contract_No. Verkoopposten op een
+ * werkorder (Job_Task_No) van het contract zonder LVS_Contract_No tellen we er zelf bij.
+ */
+const VOORTGANG_JOB_LEDGER_ENTITY = 'ProjectPosten';
+const VOORTGANG_JOB_LEDGER_SELECT = 'Entry_No,Entry_Type,Job_Task_No,Line_Amount_LCY';
+/** Optietekst van Entry_Type is taalafhankelijk; filter daarom in PHP. */
+const VOORTGANG_JOB_LEDGER_SALE_TYPES = ['Verkoop', 'Sale', 'Verkauf'];
 
 const VOORTGANG_WORKORDERS_SELECT = 'No,Contract_No,Status,Task_Code,Task_Description,Job_No,Start_Date';
 const VOORTGANG_WORKORDERS_BY_NO_SELECT = 'No,Contract_No,Status';
