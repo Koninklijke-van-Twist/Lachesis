@@ -200,6 +200,22 @@ function voortgang_scalar_string(mixed $value): string
     return '';
 }
 
+/**
+ * Klantnummer als identiteit. Alleen tekst houdt voorloopnullen.
+ * shortcut: nog geen BC-bronveld, aansluiten als Ariadne het contractklantveld bevestigt.
+ */
+function voortgang_customer_no_text(mixed $value): string
+{
+    if (is_int($value)) {
+        return (string) $value;
+    }
+    if (!is_string($value)) {
+        return '';
+    }
+
+    return trim($value);
+}
+
 function voortgang_normalize_memo_text(mixed $value): string
 {
     $text = voortgang_scalar_string($value);
@@ -1024,6 +1040,31 @@ function voortgang_assert_refresh_plausible(string $company, array $workorderSta
     throw new RuntimeException($message);
 }
 
+/**
+ * @return array{total_sales:float,total_revenue:float,total_cost:float}
+ */
+function voortgang_amounts_from_contract_row(array $row): array
+{
+    return [
+        'total_sales' => voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0),
+        // BC levert KVT_Total_Revenue negatief; toon/sla op als positief gefactureerd bedrag.
+        'total_revenue' => -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0),
+        // Geen tekenwissel. Dit is KVT_Total_Cost, niet de som van project-transactiedetails.
+        'total_cost' => voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0),
+    ];
+}
+
+function voortgang_fill_contract_header(array &$row, array $bcRow): void
+{
+    $row['description'] = voortgang_scalar_string($bcRow['Description'] ?? '');
+    $row['invoice_period'] = voortgang_scalar_string($bcRow['Invoice_Period'] ?? '');
+    $row['instructions'] = voortgang_instructions_from_contract_row($bcRow);
+    $amounts = voortgang_amounts_from_contract_row($bcRow);
+    $row['total_sales'] = $amounts['total_sales'];
+    $row['total_revenue'] = $amounts['total_revenue'];
+    $row['total_cost'] = $amounts['total_cost'];
+}
+
 function voortgang_fetch_contracts_into_rows(string $company, array &$rows): array
 {
     return voortgang_paginate_entity(
@@ -1038,13 +1079,7 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
                 return false;
             }
 
-            $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
-            $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
-            $rows[$contractNo]['instructions'] = voortgang_instructions_from_contract_row($row);
-            $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
-            // BC levert KVT_Total_Revenue negatief; toon/sla op als positief gefactureerd bedrag.
-            $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
-            $rows[$contractNo]['total_cost'] = voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0);
+            voortgang_fill_contract_header($rows[$contractNo], $row);
 
             return true;
         }
@@ -1125,6 +1160,93 @@ function voortgang_apply_unlinked_revenue_to_rows(array &$rows, array $revenueMa
         $row['total_revenue'] = voortgang_scalar_float($row['total_revenue'] ?? 0) + $extra;
     }
     unset($row);
+}
+
+/**
+ * Extra gebruikskosten op werkorders van één contract, uit al gelabelde regels.
+ * Niet aangesloten op total_cost.
+ * shortcut: BC-bedragveld, component en of de regel al in KVT_Total_Cost zit zijn onbevestigd, aansluiten pas na Ariadne.
+ *
+ * @param list<array<string, mixed>> $lines
+ * @param list<string> $workorderNos
+ * @return array{extra:float,incomplete:bool}
+ */
+function voortgang_sum_confirmed_usage_costs(array $lines, array $workorderNos): array
+{
+    $wanted = array_fill_keys(voortgang_unique_nonempty_strings($workorderNos), true);
+    $extra = 0.0;
+    $incomplete = false;
+    $seen = [];
+
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            $incomplete = true;
+            continue;
+        }
+
+        $workorder = voortgang_scalar_string($line['workorder'] ?? '');
+        if ($workorder !== '' && !isset($wanted[$workorder])) {
+            continue;
+        }
+
+        $entryNo = voortgang_scalar_string($line['entry_no'] ?? '');
+        $component = voortgang_scalar_string($line['component'] ?? '');
+        $inFlow = ($line['in_flowfield'] ?? false) === true;
+        $amount = voortgang_usage_cost_amount($line['amount'] ?? null);
+        $signature = $component . "\n" . ($amount === null ? '' : sprintf('%.2F', $amount)) . "\n" . ($inFlow ? '1' : '0') . "\n" . $workorder;
+        if ($entryNo !== '') {
+            if (isset($seen[$entryNo])) {
+                if ($seen[$entryNo] !== $signature) {
+                    $incomplete = true;
+                }
+                continue;
+            }
+            $seen[$entryNo] = $signature;
+        }
+
+        if ($inFlow) {
+            continue;
+        }
+        $known = in_array($component, ['materiaal', 'uren', 'km'], true);
+        if ($entryNo === '' || $workorder === '' || !$known || $amount === null) {
+            $incomplete = true;
+            continue;
+        }
+
+        $extra += $amount;
+    }
+
+    return [
+        'extra' => round($extra, 2),
+        'incomplete' => $incomplete,
+    ];
+}
+
+function voortgang_usage_cost_amount(mixed $value): ?float
+{
+    if ($value === null || is_bool($value) || !is_numeric($value)) {
+        return null;
+    }
+    $amount = (float) $value;
+    if (!is_finite($amount)) {
+        return null;
+    }
+
+    return round($amount, 2);
+}
+
+/**
+ * Flowfield plus bevestigde extra kosten. null = som is onvolledig en mag niet als 0 gelden.
+ *
+ * @param array{extra?:float,incomplete?:bool} $usage
+ */
+function voortgang_total_cost_if_complete(float $flowfield, array $usage): ?float
+{
+    if (($usage['incomplete'] ?? true) === true) {
+        return null;
+    }
+
+    return round($flowfield + voortgang_scalar_float($usage['extra'] ?? 0), 2);
 }
 
 /**
@@ -2041,12 +2163,7 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
                 return false;
             }
 
-            $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
-            $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
-            $rows[$contractNo]['instructions'] = voortgang_instructions_from_contract_row($row);
-            $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
-            $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
-            $rows[$contractNo]['total_cost'] = voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0);
+            voortgang_fill_contract_header($rows[$contractNo], $row);
 
             return true;
         }

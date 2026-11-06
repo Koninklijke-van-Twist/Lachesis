@@ -35,6 +35,7 @@ const VOORTGANG_CONTRACT_MEMO_FIELDS = [
     'KVT_Memo_Billing_Text',
     'KVT_Memo_Invoice_Details',
 ];
+// Klantnummer/naam niet in $select: het contractklantveld (niet de factuurklant/debiteur) is nog niet bevestigd.
 const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,Invoice_Period,gBLOBMemoMgt_GetMemoText_Rec_x002C__Rec_FieldNo_Memo,KVT_Memo_Internal_Use_Only,KVT_Memo_Billing_Text,KVT_Memo_Invoice_Details,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
 const VOORTGANG_INSTRUCTION_PREVIEW_LINES = 3;
 const VOORTGANG_PROFORMA_SELECT = 'Job_Task_No,Line_Amount,Document_No,Document_Type';
