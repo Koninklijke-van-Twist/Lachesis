@@ -60,6 +60,8 @@ function voortgang_xlsx_headers(): array
 {
     $headers = [
         LOC('voortgang.col.contract_no'),
+        LOC('voortgang.col.customer_no'),
+        LOC('voortgang.col.customer_name'),
         LOC('voortgang.col.description'),
         LOC('voortgang.col.invoice_period'),
     ];
@@ -82,6 +84,8 @@ function voortgang_xlsx_export_row(array $row): array
 {
     $values = [
         (string) ($row['contract_no'] ?? ''),
+        voortgang_customer_no_text($row['customer_no'] ?? ''),
+        (string) ($row['customer_name'] ?? ''),
         (string) ($row['description'] ?? ''),
         (string) ($row['invoice_period'] ?? ''),
     ];
@@ -95,7 +99,8 @@ function voortgang_xlsx_export_row(array $row): array
     $values[] = round((float) ($row['total_sales'] ?? 0), 2);
     $revenue = (float) ($row['total_revenue'] ?? 0);
     $values[] = round($revenue < 0 ? -$revenue : $revenue, 2);
-    $values[] = round((float) ($row['total_cost'] ?? 0), 2);
+    $cost = $row['total_cost'] ?? null;
+    $values[] = $cost === null ? '' : round((float) $cost, 2);
     $values[] = round((float) ($row['open_proforma'] ?? 0), 2);
     $values[] = (string) ($row['instructions'] ?? '');
 
