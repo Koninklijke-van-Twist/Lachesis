@@ -26,6 +26,9 @@ const VOORTGANG_JOB_LEDGER_ENTITY = 'ProjectPosten';
 const VOORTGANG_JOB_LEDGER_SELECT = 'Entry_No,Entry_Type,Job_Task_No,Line_Amount_LCY';
 /** Optietekst van Entry_Type is taalafhankelijk; filter daarom in PHP. */
 const VOORTGANG_JOB_LEDGER_SALE_TYPES = ['Verkoop', 'Sale', 'Verkauf'];
+/** Geboekte gebruikskosten. Drie losse filters: BC staat geen OR over verschillende velden toe. */
+const VOORTGANG_JOB_LEDGER_COST_SELECT = 'Entry_No,Entry_Type,Total_Cost_LCY,LVS_Contract_No,Job_No,LVS_Work_Order_No';
+const VOORTGANG_JOB_LEDGER_USAGE_TYPES = ['Gebruik', 'Usage', 'Verbrauch'];
 
 const VOORTGANG_WORKORDERS_SELECT = 'No,Contract_No,Status,Task_Code,Task_Description,Job_No,Start_Date';
 const VOORTGANG_WORKORDERS_BY_NO_SELECT = 'No,Contract_No,Status';
@@ -35,7 +38,8 @@ const VOORTGANG_CONTRACT_MEMO_FIELDS = [
     'KVT_Memo_Billing_Text',
     'KVT_Memo_Invoice_Details',
 ];
-const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Description,Invoice_Period,gBLOBMemoMgt_GetMemoText_Rec_x002C__Rec_FieldNo_Memo,KVT_Memo_Internal_Use_Only,KVT_Memo_Billing_Text,KVT_Memo_Invoice_Details,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
+// Customer_No/Name = contractklant. Bill_to_Customer_No/Bill_to_Name is de factuurklant en wordt niet gevraagd.
+const VOORTGANG_CONTRACTS_SELECT = 'Contract_No,Customer_No,Name,Description,Invoice_Period,gBLOBMemoMgt_GetMemoText_Rec_x002C__Rec_FieldNo_Memo,KVT_Memo_Internal_Use_Only,KVT_Memo_Billing_Text,KVT_Memo_Invoice_Details,KVT_Total_Sales_Price,KVT_Total_Revenue,KVT_Total_Cost';
 const VOORTGANG_INSTRUCTION_PREVIEW_LINES = 3;
 const VOORTGANG_PROFORMA_SELECT = 'Job_Task_No,Line_Amount,Document_No,Document_Type';
 const VOORTGANG_PROFORMA_DOCUMENT_TYPE = 'Factuur';

@@ -200,6 +200,22 @@ function voortgang_scalar_string(mixed $value): string
     return '';
 }
 
+/**
+ * Klantnummer als identiteit. Alleen tekst houdt voorloopnullen.
+ * shortcut: nog geen BC-bronveld, aansluiten als Ariadne het contractklantveld bevestigt.
+ */
+function voortgang_customer_no_text(mixed $value): string
+{
+    if (is_int($value)) {
+        return (string) $value;
+    }
+    if (!is_string($value)) {
+        return '';
+    }
+
+    return trim($value);
+}
+
 function voortgang_normalize_memo_text(mixed $value): string
 {
     $text = voortgang_scalar_string($value);
@@ -884,6 +900,8 @@ function voortgang_ensure_row(array &$rows, string $contractNo): void
 
     $rows[$contractNo] = [
         'contract_no' => $contractNo,
+        'customer_no' => '',
+        'customer_name' => '',
         'description' => '',
         'invoice_period' => '',
         'counts' => voortgang_empty_counts(),
@@ -1024,6 +1042,33 @@ function voortgang_assert_refresh_plausible(string $company, array $workorderSta
     throw new RuntimeException($message);
 }
 
+/**
+ * @return array{total_sales:float,total_revenue:float,total_cost:float}
+ */
+function voortgang_amounts_from_contract_row(array $row): array
+{
+    return [
+        'total_sales' => voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0),
+        // BC levert KVT_Total_Revenue negatief; toon/sla op als positief gefactureerd bedrag.
+        'total_revenue' => -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0),
+        // Wordt na de refresh vervangen door de unieke geboekte gebruikssom.
+        'total_cost' => voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0),
+    ];
+}
+
+function voortgang_fill_contract_header(array &$row, array $bcRow): void
+{
+    $row['customer_no'] = voortgang_customer_no_text($bcRow['Customer_No'] ?? '');
+    $row['customer_name'] = voortgang_scalar_string($bcRow['Name'] ?? '');
+    $row['description'] = voortgang_scalar_string($bcRow['Description'] ?? '');
+    $row['invoice_period'] = voortgang_scalar_string($bcRow['Invoice_Period'] ?? '');
+    $row['instructions'] = voortgang_instructions_from_contract_row($bcRow);
+    $amounts = voortgang_amounts_from_contract_row($bcRow);
+    $row['total_sales'] = $amounts['total_sales'];
+    $row['total_revenue'] = $amounts['total_revenue'];
+    $row['total_cost'] = $amounts['total_cost'];
+}
+
 function voortgang_fetch_contracts_into_rows(string $company, array &$rows): array
 {
     return voortgang_paginate_entity(
@@ -1038,13 +1083,7 @@ function voortgang_fetch_contracts_into_rows(string $company, array &$rows): arr
                 return false;
             }
 
-            $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
-            $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
-            $rows[$contractNo]['instructions'] = voortgang_instructions_from_contract_row($row);
-            $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
-            // BC levert KVT_Total_Revenue negatief; toon/sla op als positief gefactureerd bedrag.
-            $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
-            $rows[$contractNo]['total_cost'] = voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0);
+            voortgang_fill_contract_header($rows[$contractNo], $row);
 
             return true;
         }
@@ -1125,6 +1164,295 @@ function voortgang_apply_unlinked_revenue_to_rows(array &$rows, array $revenueMa
         $row['total_revenue'] = voortgang_scalar_float($row['total_revenue'] ?? 0) + $extra;
     }
     unset($row);
+}
+
+function voortgang_signed_cost_amount(mixed $value): ?float
+{
+    if ($value === null || is_bool($value) || $value === '') {
+        return null;
+    }
+    if (!is_int($value) && !is_float($value) && !(is_string($value) && is_numeric(trim($value)))) {
+        return null;
+    }
+    $amount = (float) $value;
+    if (!is_finite($amount)) {
+        return null;
+    }
+
+    return round($amount, 2);
+}
+
+/**
+ * @param list<array{0:string,1:string}> $pairs
+ * @return array<string, list<string>>
+ */
+function voortgang_claims_from_pairs(array $pairs): array
+{
+    $claims = [];
+    foreach ($pairs as $pair) {
+        if (!is_array($pair)) {
+            continue;
+        }
+        $no = voortgang_scalar_string($pair[0] ?? '');
+        $contract = voortgang_scalar_string($pair[1] ?? '');
+        if ($no === '' || $contract === '') {
+            continue;
+        }
+        $claims[$no][$contract] = $contract;
+    }
+    $out = [];
+    foreach ($claims as $no => $contracts) {
+        $out[$no] = array_values($contracts);
+    }
+
+    return $out;
+}
+
+/**
+ * @param array<string, mixed> $rows
+ * @return array<string, list<string>>
+ */
+function voortgang_workorder_claims_from_rows(array $rows): array
+{
+    $pairs = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contract = voortgang_scalar_string($row['contract_no'] ?? '');
+        foreach ((is_array($row['workorders'] ?? null) ? $row['workorders'] : []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $pairs[] = [voortgang_scalar_string($item['no'] ?? ''), $contract];
+        }
+    }
+
+    return voortgang_claims_from_pairs($pairs);
+}
+
+/**
+ * Lege LVS_Contract_No volgt Job_No of LVS_Work_Order_No. Job_Task_No telt niet mee.
+ * Een gevuld contractnummer wint en gaat niet naar een ander contract.
+ *
+ * @param array<string, list<string>> $projectClaims
+ * @param array<string, list<string>> $workorderClaims
+ * @return array{contracts:list<string>,conflict:bool}
+ */
+function voortgang_usage_cost_targets(array $entry, array $projectClaims, array $workorderClaims): array
+{
+    $explicit = voortgang_scalar_string($entry['LVS_Contract_No'] ?? '');
+    if ($explicit !== '') {
+        return ['contracts' => [$explicit], 'conflict' => false];
+    }
+
+    $found = [];
+    $job = voortgang_scalar_string($entry['Job_No'] ?? '');
+    if ($job !== '' && isset($projectClaims[$job])) {
+        foreach ($projectClaims[$job] as $contract) {
+            $found[$contract] = $contract;
+        }
+    }
+    $workorder = voortgang_scalar_string($entry['LVS_Work_Order_No'] ?? '');
+    if ($workorder !== '' && isset($workorderClaims[$workorder])) {
+        foreach ($workorderClaims[$workorder] as $contract) {
+            $found[$contract] = $contract;
+        }
+    }
+    $contracts = array_values($found);
+
+    return ['contracts' => $contracts, 'conflict' => count($contracts) > 1];
+}
+
+/**
+ * Unieke Gebruik-posten per contract. Entry_No is uniek binnen één bedrijf; niet mengen.
+ * Total_Cost_LCY blijft gesigneerd. Ontbrekend bedrag of een scopeconflict maakt het totaal onvolledig.
+ *
+ * @param list<array<string, mixed>> $entries
+ * @param array<string, list<string>> $projectClaims
+ * @param array<string, list<string>> $workorderClaims
+ * @return array<string, array{total:float,incomplete:bool}>
+ */
+function voortgang_usage_costs_by_contract(array $entries, array $projectClaims, array $workorderClaims): array
+{
+    $buckets = [];
+    $seen = [];
+    $mark = static function (array &$buckets, string $contract, bool $incomplete, float $amount): void {
+        if ($contract === '') {
+            return;
+        }
+        if (!isset($buckets[$contract])) {
+            $buckets[$contract] = ['total' => 0.0, 'incomplete' => false];
+        }
+        if ($incomplete) {
+            $buckets[$contract]['incomplete'] = true;
+
+            return;
+        }
+        $buckets[$contract]['total'] = round($buckets[$contract]['total'] + $amount, 2);
+    };
+
+    foreach ($entries as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
+        if (!voortgang_option_matches(voortgang_scalar_string($entry['Entry_Type'] ?? ''), VOORTGANG_JOB_LEDGER_USAGE_TYPES)) {
+            continue;
+        }
+        $target = voortgang_usage_cost_targets($entry, $projectClaims, $workorderClaims);
+        if ($target['contracts'] === []) {
+            continue;
+        }
+        $amount = array_key_exists('Total_Cost_LCY', $entry)
+            ? voortgang_signed_cost_amount($entry['Total_Cost_LCY'])
+            : null;
+        $entryNo = voortgang_scalar_string($entry['Entry_No'] ?? '');
+        if ($entryNo !== '' && isset($seen[$entryNo])) {
+            if ($seen[$entryNo]['sig'] !== [$target['conflict'], $target['contracts'], $amount]) {
+                foreach (array_merge($seen[$entryNo]['contracts'], $target['contracts']) as $contract) {
+                    $mark($buckets, (string) $contract, true, 0.0);
+                }
+            }
+            continue;
+        }
+        if ($entryNo !== '') {
+            $seen[$entryNo] = [
+                'sig' => [$target['conflict'], $target['contracts'], $amount],
+                'contracts' => $target['contracts'],
+            ];
+        }
+        $incomplete = $entryNo === '' || $target['conflict'] || $amount === null;
+        if ($incomplete) {
+            foreach ($target['contracts'] as $contract) {
+                $mark($buckets, $contract, true, 0.0);
+            }
+            continue;
+        }
+        $mark($buckets, $target['contracts'][0], false, (float) $amount);
+    }
+
+    return $buckets;
+}
+
+/**
+ * @param array<string, mixed> $rows
+ * @param array<string, array{total:float,incomplete:bool}> $buckets
+ */
+function voortgang_apply_usage_costs_to_rows(array &$rows, array $buckets): void
+{
+    foreach ($rows as &$row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contract = voortgang_scalar_string($row['contract_no'] ?? '');
+        $bucket = $buckets[$contract] ?? ['total' => 0.0, 'incomplete' => false];
+        $row['total_cost'] = !empty($bucket['incomplete']) ? null : round((float) $bucket['total'], 2);
+    }
+    unset($row);
+}
+
+/**
+ * @return array<string, list<string>>
+ */
+function voortgang_fetch_project_claims(string $company, array $contractNos): array
+{
+    $wanted = array_fill_keys(voortgang_unique_nonempty_strings($contractNos), true);
+    $pairs = [];
+    foreach (array_chunk(array_keys($wanted), VOORTGANG_WORKORDER_CONTRACT_CHUNK) as $chunk) {
+        $filter = voortgang_odata_eq_or_filter('KVT_Contract_No', $chunk);
+        if ($filter === '') {
+            continue;
+        }
+        voortgang_paginate_entity(
+            $company,
+            VOORTGANG_PROJECTS_ENTITY,
+            ['$select' => 'No,KVT_Contract_No', '$filter' => $filter],
+            static function (array $row) use (&$pairs, $wanted): bool {
+                $contract = voortgang_scalar_string($row['KVT_Contract_No'] ?? '');
+                $no = voortgang_scalar_string($row['No'] ?? '');
+                if ($no === '' || !isset($wanted[$contract])) {
+                    return false;
+                }
+                $pairs[] = [$no, $contract];
+
+                return true;
+            }
+        );
+    }
+
+    return voortgang_claims_from_pairs($pairs);
+}
+
+/**
+ * Drie routes, daarna uniek op Entry_No. Zelfde post mag via project én werkorder terugkomen.
+ *
+ * @param list<string> $contractNos
+ * @param list<string> $projectNos
+ * @param list<string> $workorderNos
+ * @return list<array<string, mixed>>
+ */
+function voortgang_fetch_usage_cost_entries(string $company, array $contractNos, array $projectNos, array $workorderNos): array
+{
+    $entries = [];
+    $routes = [
+        'LVS_Contract_No' => $contractNos,
+        'Job_No' => $projectNos,
+        'LVS_Work_Order_No' => $workorderNos,
+    ];
+    foreach ($routes as $field => $values) {
+        foreach (array_chunk(voortgang_unique_nonempty_strings($values), VOORTGANG_WORKORDER_CONTRACT_CHUNK) as $chunk) {
+            $filter = voortgang_odata_eq_or_filter($field, $chunk);
+            if ($filter === '') {
+                continue;
+            }
+            voortgang_paginate_entity(
+                $company,
+                VOORTGANG_JOB_LEDGER_ENTITY,
+                ['$select' => VOORTGANG_JOB_LEDGER_COST_SELECT, '$filter' => $filter],
+                static function (array $row) use (&$entries): bool {
+                    $entries[] = $row;
+
+                    return true;
+                }
+            );
+        }
+    }
+
+    return $entries;
+}
+
+/**
+ * Vervangt total_cost door de unieke geboekte gebruikssom. Telt KVT_Total_Cost niet nog eens op.
+ *
+ * @param array<string, mixed> $rows
+ */
+function voortgang_apply_posted_usage_costs(string $company, array &$rows): void
+{
+    $contracts = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $contract = voortgang_scalar_string($row['contract_no'] ?? '');
+        if ($contract !== '') {
+            $contracts[] = $contract;
+        }
+    }
+    if ($contracts === []) {
+        return;
+    }
+    $projectClaims = voortgang_fetch_project_claims($company, $contracts);
+    $workorderClaims = voortgang_workorder_claims_from_rows($rows);
+    $entries = voortgang_fetch_usage_cost_entries(
+        $company,
+        $contracts,
+        array_keys($projectClaims),
+        array_keys($workorderClaims)
+    );
+    voortgang_apply_usage_costs_to_rows(
+        $rows,
+        voortgang_usage_costs_by_contract($entries, $projectClaims, $workorderClaims)
+    );
 }
 
 /**
@@ -1769,6 +2097,7 @@ function voortgang_refresh_company(string $company): array
         voortgang_attach_project_statuses($company, $rows);
         $contractStats = voortgang_fetch_contracts_into_rows($company, $rows);
         voortgang_apply_unlinked_revenue_to_rows($rows, voortgang_fetch_unlinked_revenue_map($company));
+        voortgang_apply_posted_usage_costs($company, $rows);
         voortgang_assert_refresh_plausible($company, $workorderStats, $contractStats);
         $finalRows = voortgang_finalize_rows($rows);
         $dateBounds = voortgang_workorder_date_bounds_from_rows($finalRows);
@@ -2041,18 +2370,14 @@ function voortgang_build_contract_row_from_bc(string $company, string $contractN
                 return false;
             }
 
-            $rows[$contractNo]['description'] = voortgang_scalar_string($row['Description'] ?? '');
-            $rows[$contractNo]['invoice_period'] = voortgang_scalar_string($row['Invoice_Period'] ?? '');
-            $rows[$contractNo]['instructions'] = voortgang_instructions_from_contract_row($row);
-            $rows[$contractNo]['total_sales'] = voortgang_scalar_float($row['KVT_Total_Sales_Price'] ?? 0);
-            $rows[$contractNo]['total_revenue'] = -voortgang_scalar_float($row['KVT_Total_Revenue'] ?? 0);
-            $rows[$contractNo]['total_cost'] = voortgang_scalar_float($row['KVT_Total_Cost'] ?? 0);
+            voortgang_fill_contract_header($rows[$contractNo], $row);
 
             return true;
         }
     );
 
     voortgang_apply_unlinked_revenue_to_rows($rows, voortgang_fetch_unlinked_revenue_map($company, $workorderNos));
+    voortgang_apply_posted_usage_costs($company, $rows);
 
     $final = voortgang_finalize_rows($rows);
 

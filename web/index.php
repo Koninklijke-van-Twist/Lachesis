@@ -26,6 +26,15 @@ function voortgang_format_money(float $value): string
     return '€ ' . number_format($value, 2, ',', '.');
 }
 
+function voortgang_format_cost(mixed $value): string
+{
+    if ($value === null || $value === '') {
+        return '—';
+    }
+
+    return voortgang_format_money((float) $value);
+}
+
 /** BC levert revenue vaak negatief; normaliseer naar positief bedrag. */
 function voortgang_normalized_revenue(float $value): float
 {
@@ -45,12 +54,14 @@ function voortgang_row_search_text(array $row): string
 {
     $parts = [
         $row['contract_no'] ?? '',
+        $row['customer_no'] ?? '',
+        $row['customer_name'] ?? '',
         $row['description'] ?? '',
         $row['invoice_period'] ?? '',
         $row['instructions'] ?? '',
         voortgang_format_money((float) ($row['total_sales'] ?? 0)),
         voortgang_format_money(voortgang_normalized_revenue((float) ($row['total_revenue'] ?? 0))),
-        voortgang_format_money((float) ($row['total_cost'] ?? 0)),
+        voortgang_format_cost($row['total_cost'] ?? null),
         voortgang_format_money((float) ($row['open_proforma'] ?? 0)),
     ];
 
@@ -293,11 +304,13 @@ foreach ($rowsRaw as $row) {
     }
     $contractData[$contractNo] = [
         'contract_no' => $contractNo,
+        'customer_no' => (string) ($row['customer_no'] ?? ''),
+        'customer_name' => (string) ($row['customer_name'] ?? ''),
         'description' => (string) ($row['description'] ?? ''),
         'invoice_period' => (string) ($row['invoice_period'] ?? ''),
         'total_sales' => (float) ($row['total_sales'] ?? 0),
         'total_revenue' => (float) ($row['total_revenue'] ?? 0),
-        'total_cost' => (float) ($row['total_cost'] ?? 0),
+        'total_cost' => array_key_exists('total_cost', $row) ? $row['total_cost'] : null,
         'open_proforma' => (float) ($row['open_proforma'] ?? 0),
         'instructions' => (string) ($row['instructions'] ?? ''),
         'items' => is_array($row['workorders'] ?? null) ? $row['workorders'] : [],
@@ -754,6 +767,8 @@ if ($company !== '' && !$needsCompanyChoice) {
                     <thead>
                         <tr>
                             <th data-sort="contract_no" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.contract_no')) ?></th>
+                            <th data-sort="customer_no" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.customer_no')) ?></th>
+                            <th data-sort="customer_name" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.customer_name')) ?></th>
                             <th data-sort="description" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.description')) ?></th>
                             <th data-sort="invoice_period" data-sort-type="text"><?= voortgang_h(LOC('voortgang.col.invoice_period')) ?></th>
                             <?php foreach (VOORTGANG_STATUSES as $status): ?>
@@ -793,6 +808,8 @@ if ($company !== '' && !$needsCompanyChoice) {
                                 data-filter-empty="<?= $rowHidden ? '1' : '0' ?>"
                                 data-search="<?= voortgang_h(voortgang_row_search_text($rawRow)) ?>"
                                 data-sort-contract_no="<?= voortgang_h((string) ($rawRow['contract_no'] ?? '')) ?>"
+                                data-sort-customer_no="<?= voortgang_h((string) ($rawRow['customer_no'] ?? '')) ?>"
+                                data-sort-customer_name="<?= voortgang_h((string) ($rawRow['customer_name'] ?? '')) ?>"
                                 data-sort-description="<?= voortgang_h((string) ($rawRow['description'] ?? '')) ?>"
                                 data-sort-invoice_period="<?= voortgang_h((string) ($rawRow['invoice_period'] ?? '')) ?>"
                                 <?php foreach (VOORTGANG_STATUSES as $status): ?>
@@ -802,7 +819,7 @@ if ($company !== '' && !$needsCompanyChoice) {
                                 data-sort-progress="<?= voortgang_h((string) $agg['progress']) ?>"
                                 data-sort-total_sales="<?= voortgang_h((string) ((float) ($rawRow['total_sales'] ?? 0))) ?>"
                                 data-sort-total_revenue="<?= voortgang_h((string) $revenue) ?>"
-                                data-sort-total_cost="<?= voortgang_h((string) ((float) ($rawRow['total_cost'] ?? 0))) ?>"
+                                data-sort-total_cost="<?= ($rawRow['total_cost'] ?? null) === null ? '' : voortgang_h((string) ((float) $rawRow['total_cost'])) ?>"
                                 data-sort-open_proforma="<?= voortgang_h((string) ((float) ($agg['proforma_total'] ?? 0))) ?>"
                                 data-sort-instructions="<?= voortgang_h((string) ($rawRow['instructions'] ?? '')) ?>"
                             >
@@ -815,6 +832,8 @@ if ($company !== '' && !$needsCompanyChoice) {
                                     >♻️</button>
                                     <?= voortgang_h((string) ($rawRow['contract_no'] ?? '')) ?>
                                 </td>
+                                <td><?= voortgang_h((string) ($rawRow['customer_no'] ?? '')) ?></td>
+                                <td><?= voortgang_h((string) ($rawRow['customer_name'] ?? '')) ?></td>
                                 <td><?= voortgang_h((string) ($rawRow['description'] ?? '')) ?></td>
                                 <td><?= voortgang_h((string) ($rawRow['invoice_period'] ?? '')) ?></td>
                                 <?php foreach (VOORTGANG_STATUSES as $status): ?>
@@ -824,7 +843,7 @@ if ($company !== '' && !$needsCompanyChoice) {
                                 <td class="num"><?= voortgang_h(voortgang_format_percent((float) $agg['progress'])) ?></td>
                                 <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_sales'] ?? 0))) ?></td>
                                 <td class="num"><?= voortgang_h(voortgang_format_money($revenue)) ?></td>
-                                <td class="num"><?= voortgang_h(voortgang_format_money((float) ($rawRow['total_cost'] ?? 0))) ?></td>
+                                <td class="num"><?= voortgang_h(voortgang_format_cost($rawRow['total_cost'] ?? null)) ?></td>
                                 <?= voortgang_proforma_cell((float) ($agg['proforma_total'] ?? 0)) ?>
                                 <?= voortgang_instructions_cell((string) ($rawRow['instructions'] ?? '')) ?>
                             </tr>
@@ -1109,15 +1128,33 @@ if ($company !== '' && !$needsCompanyChoice) {
             + instructionsHtml(truncateInstructionPreview(text)) + '</button></td>';
     }
 
+    function costNumber(value) {
+        if (value === null || value === undefined || value === '') {
+            return null;
+        }
+        var amount = Number(value);
+        return isFinite(amount) ? amount : null;
+    }
+
+    function formatCostJs(value) {
+        var amount = costNumber(value);
+        if (amount === null) {
+            return '—';
+        }
+        return formatMoneyJs(amount);
+    }
+
     function rowSearchText(row) {
         return [
             row.contract_no || '',
+            row.customer_no || '',
+            row.customer_name || '',
             row.description || '',
             row.invoice_period || '',
             row.instructions || '',
             formatMoneyJs(row.total_sales || 0),
             formatMoneyJs(normalizedRevenueJs(row.total_revenue || 0)),
-            formatMoneyJs(row.total_cost || 0),
+            formatCostJs(row.total_cost),
             formatMoneyJs(row.open_proforma || 0)
         ].join(' ').toLowerCase();
     }
@@ -1141,11 +1178,13 @@ if ($company !== '' && !$needsCompanyChoice) {
         });
         contractData[contractNo] = {
             contract_no: contractNo,
+            customer_no: row.customer_no || '',
+            customer_name: row.customer_name || '',
             description: row.description || '',
             invoice_period: row.invoice_period || '',
             total_sales: Number(row.total_sales || 0),
             total_revenue: Number(row.total_revenue || 0),
-            total_cost: Number(row.total_cost || 0),
+            total_cost: costNumber(row.total_cost),
             open_proforma: Number(row.open_proforma || 0),
             instructions: row.instructions || '',
             items: Array.isArray(row.workorders) ? row.workorders : []
@@ -1231,6 +1270,8 @@ if ($company !== '' && !$needsCompanyChoice) {
         tr.setAttribute('data-filter-empty', empty ? '1' : '0');
         tr.setAttribute('data-search', rowSearchText(data));
         tr.setAttribute('data-sort-contract_no', contractNo);
+        tr.setAttribute('data-sort-customer_no', data.customer_no || '');
+        tr.setAttribute('data-sort-customer_name', data.customer_name || '');
         tr.setAttribute('data-sort-description', data.description || '');
         tr.setAttribute('data-sort-invoice_period', data.invoice_period || '');
         statusList.forEach(function (status) {
@@ -1240,7 +1281,7 @@ if ($company !== '' && !$needsCompanyChoice) {
         tr.setAttribute('data-sort-progress', String(agg.progress));
         tr.setAttribute('data-sort-total_sales', String(Number(data.total_sales || 0)));
         tr.setAttribute('data-sort-total_revenue', String(revenue));
-        tr.setAttribute('data-sort-total_cost', String(Number(data.total_cost || 0)));
+        tr.setAttribute('data-sort-total_cost', costNumber(data.total_cost) === null ? '' : String(costNumber(data.total_cost)));
         tr.setAttribute('data-sort-open_proforma', String(Number(agg.proforma_total || 0)));
         tr.setAttribute('data-sort-instructions', data.instructions || '');
 
@@ -1248,6 +1289,8 @@ if ($company !== '' && !$needsCompanyChoice) {
         html += '<button type="button" class="voortgang-row-refresh" aria-label="' + escapeHtml(labels.refresh_aria) + '" title="' + escapeHtml(labels.refresh_aria) + '">♻️</button>';
         html += escapeHtml(contractNo);
         html += '</td>';
+        html += '<td>' + escapeHtml(data.customer_no || '') + '</td>';
+        html += '<td>' + escapeHtml(data.customer_name || '') + '</td>';
         html += '<td>' + escapeHtml(data.description || '') + '</td>';
         html += '<td>' + escapeHtml(data.invoice_period || '') + '</td>';
         statusList.forEach(function (status) {
@@ -1257,7 +1300,7 @@ if ($company !== '' && !$needsCompanyChoice) {
         html += '<td class="num">' + escapeHtml(formatPercentJs(agg.progress)) + '</td>';
         html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_sales || 0)) + '</td>';
         html += '<td class="num">' + escapeHtml(formatMoneyJs(revenue)) + '</td>';
-        html += '<td class="num">' + escapeHtml(formatMoneyJs(data.total_cost || 0)) + '</td>';
+        html += '<td class="num">' + escapeHtml(formatCostJs(data.total_cost)) + '</td>';
         html += proformaCellHtml(agg.proforma_total || 0);
         html += instructionsCellHtml(data.instructions || '');
         tr.innerHTML = html;
@@ -1433,15 +1476,19 @@ if ($company !== '' && !$needsCompanyChoice) {
         var cmp = 0;
 
         if (sortType === 'number') {
-            var leftNum = parseFloat(left);
-            var rightNum = parseFloat(right);
-            if (isNaN(leftNum)) {
-                leftNum = 0;
+            if (left === '' || right === '') {
+                cmp = left === right ? 0 : (left === '' ? -1 : 1);
+            } else {
+                var leftNum = parseFloat(left);
+                var rightNum = parseFloat(right);
+                if (isNaN(leftNum)) {
+                    leftNum = 0;
+                }
+                if (isNaN(rightNum)) {
+                    rightNum = 0;
+                }
+                cmp = leftNum === rightNum ? 0 : (leftNum < rightNum ? -1 : 1);
             }
-            if (isNaN(rightNum)) {
-                rightNum = 0;
-            }
-            cmp = leftNum === rightNum ? 0 : (leftNum < rightNum ? -1 : 1);
         } else {
             cmp = left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
         }
